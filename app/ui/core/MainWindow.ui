@@ -38,7 +38,7 @@
          <item>
           <widget class="QCheckBox" name="mediaPanelCheckBox">
            <property name="text">
-            <string>Media Panel</string>
+            <string>媒体面板</string>
            </property>
            <property name="checked">
             <bool>true</bool>
@@ -48,7 +48,7 @@
          <item>
           <widget class="QCheckBox" name="facesPanelCheckBox">
            <property name="text">
-            <string>Faces Panel</string>
+            <string>面部面板</string>
            </property>
            <property name="checked">
             <bool>true</bool>
@@ -58,7 +58,7 @@
          <item>
           <widget class="QCheckBox" name="parametersPanelCheckBox">
            <property name="text">
-            <string>Parameters Panel</string>
+            <string>参数面板</string>
            </property>
            <property name="checked">
             <bool>true</bool>
@@ -81,14 +81,14 @@
          <item>
           <widget class="QCheckBox" name="faceCompareCheckBox">
            <property name="text">
-            <string>VIew Face Compare</string>
+            <string>面部对比</string>
            </property>
           </widget>
          </item>
          <item>
           <widget class="QCheckBox" name="faceMaskCheckBox">
            <property name="text">
-            <string>View Face Mask</string>
+            <string>面部遮罩</string>
            </property>
           </widget>
          </item>
@@ -123,7 +123,7 @@
               </size>
              </property>
              <property name="toolTip">
-              <string>Frame Number</string>
+              <string>帧数</string>
              </property>
              <property name="clearButtonEnabled">
               <bool>false</bool>
@@ -363,7 +363,7 @@
            <item>
             <widget class="QPushButton" name="addMarkerButton">
              <property name="toolTip">
-              <string>Add Marker</string>
+              <string>添加标记</string>
              </property>
              <property name="text">
               <string/>
@@ -380,7 +380,7 @@
            <item>
             <widget class="QPushButton" name="removeMarkerButton">
              <property name="toolTip">
-              <string>Remove Marker</string>
+              <string>删除标记</string>
              </property>
              <property name="text">
               <string/>
@@ -397,7 +397,7 @@
            <item>
             <widget class="QPushButton" name="previousMarkerButton">
              <property name="toolTip">
-              <string>Move to Previous Marker</string>
+              <string>上一个标记</string>
              </property>
              <property name="text">
               <string/>
@@ -414,7 +414,7 @@
            <item>
             <widget class="QPushButton" name="nextMarkerButton">
              <property name="toolTip">
-              <string>Move to Next Marker</string>
+              <string>下一个标记</string>
              </property>
              <property name="text">
               <string/>
@@ -431,7 +431,7 @@
            <item>
             <widget class="QPushButton" name="viewFullScreenButton">
              <property name="toolTip">
-              <string>View Fullscreen (F11)</string>
+              <string>全屏 (F11)</string>
              </property>
              <property name="text">
               <string/>
@@ -529,7 +529,7 @@
                    </size>
                   </property>
                   <property name="text">
-                   <string>Find Faces</string>
+                   <string>查找面部</string>
                   </property>
                   <property name="checkable">
                    <bool>false</bool>
@@ -542,7 +542,7 @@
                 <item>
                  <widget class="QPushButton" name="clearTargetFacesButton">
                   <property name="text">
-                   <string>Clear Faces</string>
+                   <string>清除面部</string>
                   </property>
                   <property name="checkable">
                    <bool>false</bool>
@@ -555,7 +555,7 @@
                 <item>
                  <widget class="QPushButton" name="swapfacesButton">
                   <property name="text">
-                   <string>Swap Faces</string>
+                   <string>交换面部</string>
                   </property>
                   <property name="checkable">
                    <bool>true</bool>
@@ -568,7 +568,7 @@
                 <item>
                  <widget class="QPushButton" name="editFacesButton">
                   <property name="text">
-                   <string>Edit Faces</string>
+                   <string>编辑面部</string>
                   </property>
                   <property name="checkable">
                    <bool>true</bool>
@@ -608,7 +608,7 @@
              </size>
             </property>
             <property name="toolTip">
-             <string>Save Embedding</string>
+             <string>保存嵌入</string>
             </property>
             <property name="verticalScrollBarPolicy">
              <enum>Qt::ScrollBarPolicy::ScrollBarAlwaysOff</enum>
@@ -644,7 +644,7 @@
             <item>
              <widget class="QPushButton" name="saveImageButton">
               <property name="text">
-               <string>Save Image</string>
+               <string>保存图像</string>
               </property>
               <property name="flat">
                <bool>true</bool>
@@ -658,14 +658,14 @@
             <item>
              <widget class="QLineEdit" name="inputEmbeddingsSearchBox">
               <property name="placeholderText">
-               <string>Search Embeddings</string>
+               <string>搜索嵌入</string>
               </property>
              </widget>
             </item>
             <item>
              <widget class="QPushButton" name="openEmbeddingButton">
               <property name="toolTip">
-               <string>Open Embedding File</string>
+               <string>打开嵌入文件</string>
               </property>
               <property name="text">
                <string/>
@@ -682,7 +682,7 @@
             <item>
              <widget class="QPushButton" name="saveEmbeddingButton">
               <property name="toolTip">
-               <string>Save Embedding</string>
+               <string>保存嵌入</string>
               </property>
               <property name="text">
                <string/>
@@ -699,7 +699,7 @@
             <item>
              <widget class="QPushButton" name="saveEmbeddingAsButton">
               <property name="toolTip">
-               <string>Save Embedding As</string>
+               <string>嵌入另存为</string>
               </property>
               <property name="text">
                <string/>
@@ -750,7 +750,7 @@
     <set>QDockWidget::DockWidgetFeature::DockWidgetFloatable|QDockWidget::DockWidgetFeature::DockWidgetMovable</set>
    </property>
    <property name="windowTitle">
-    <string>Target Videos and Input Faces</string>
+    <string>目标视频与人脸</string>
    </property>
    <attribute name="dockWidgetArea">
     <number>1</number>
@@ -762,7 +762,7 @@
        <item>
         <widget class="QGroupBox" name="groupBox_TargetVideos_Select">
          <property name="title">
-          <string>Target Videos/Images</string>
+          <string>目标视频/图像</string>
          </property>
          <layout class="QGridLayout" name="gridLayout_3">
           <item row="0" column="0">
@@ -770,7 +770,7 @@
             <item>
              <widget class="QLabel" name="labelTargetVideosPath">
               <property name="text">
-               <string>Select Videos/Images Path</string>
+               <string>选择视频/图像路径</string>
               </property>
               <property name="wordWrap">
                <bool>false</bool>
@@ -786,7 +786,7 @@
                </sizepolicy>
               </property>
               <property name="toolTip">
-               <string>Choose Target Media Folder</string>
+               <string>选择目标媒体文件夹</string>
               </property>
               <property name="text">
                <string/>
@@ -819,14 +819,14 @@
             <string/>
            </property>
            <property name="placeholderText">
-            <string>Search Videos/Images</string>
+            <string>搜索视频/图像</string>
            </property>
           </widget>
          </item>
          <item>
           <widget class="QCheckBox" name="filterImagesCheckBox">
            <property name="toolTip">
-            <string>Include Images</string>
+            <string>包含图像</string>
            </property>
            <property name="text">
             <string/>
@@ -843,7 +843,7 @@
          <item>
           <widget class="QCheckBox" name="filterVideosCheckBox">
            <property name="toolTip">
-            <string>Include Videos</string>
+            <string>包含视频</string>
            </property>
            <property name="text">
             <string/>
@@ -860,7 +860,7 @@
          <item>
           <widget class="QCheckBox" name="filterWebcamsCheckBox">
            <property name="toolTip">
-            <string>Include Webcams</string>
+            <string>包含摄像头</string>
            </property>
            <property name="text">
             <string/>
@@ -889,7 +889,7 @@
        <item>
         <widget class="QGroupBox" name="groupBox_InputFaces_Select">
          <property name="title">
-          <string>Input Faces</string>
+          <string>输入人脸</string>
          </property>
          <layout class="QGridLayout" name="gridLayout">
           <item row="0" column="0">
@@ -897,7 +897,7 @@
             <item>
              <widget class="QLabel" name="labelInputFacesPath">
               <property name="text">
-               <string>Select Face Images Path</string>
+               <string>选择人脸图像路径</string>
               </property>
              </widget>
             </item>
@@ -910,7 +910,7 @@
                </sizepolicy>
               </property>
               <property name="toolTip">
-               <string>Choose Input Faces Folder</string>
+               <string>选择输入人脸文件夹</string>
               </property>
               <property name="text">
                <string/>
@@ -938,7 +938,7 @@
        <item>
         <widget class="QLineEdit" name="inputFacesSearchBox">
          <property name="placeholderText">
-          <string>Search Faces</string>
+          <string>搜索人脸</string>
          </property>
         </widget>
        </item>
@@ -962,7 +962,7 @@
     <set>QDockWidget::DockWidgetFeature::DockWidgetFloatable|QDockWidget::DockWidgetFeature::DockWidgetMovable</set>
    </property>
    <property name="windowTitle">
-    <string>Control Options</string>
+    <string>控制选项</string>
    </property>
    <attribute name="dockWidgetArea">
     <number>2</number>
@@ -1004,7 +1004,7 @@
        </property>
        <widget class="QWidget" name="face_swap_tab">
         <attribute name="title">
-         <string>Face Swap</string>
+         <string>换脸</string>
         </attribute>
         <layout class="QVBoxLayout" name="verticalLayout_4">
          <item>
@@ -1014,7 +1014,7 @@
        </widget>
        <widget class="QWidget" name="face_editor_tab">
         <attribute name="title">
-         <string>Face Editor</string>
+         <string>人脸编辑</string>
         </attribute>
         <layout class="QVBoxLayout" name="verticalLayout_3">
          <item>
@@ -1024,7 +1024,7 @@
        </widget>
        <widget class="QWidget" name="common_tab">
         <attribute name="title">
-         <string>Common</string>
+         <string>通用</string>
         </attribute>
         <layout class="QVBoxLayout" name="commonWidgetsLayout_1">
          <item>
@@ -1034,13 +1034,13 @@
        </widget>
        <widget class="QWidget" name="settings_tab">
         <attribute name="title">
-         <string>Settings</string>
+         <string>设置</string>
         </attribute>
         <layout class="QVBoxLayout" name="verticalLayout_2">
          <item>
           <widget class="QLabel" name="label">
            <property name="text">
-            <string>Output Directory</string>
+            <string>输出目录</string>
            </property>
           </widget>
          </item>
@@ -1058,7 +1058,7 @@
              <item>
               <widget class="QPushButton" name="outputFolderButton">
                <property name="text">
-                <string>Browse Folder</string>
+                <string>浏览文件夹</string>
                </property>
                <property name="flat">
                 <bool>false</bool>
@@ -1085,7 +1085,7 @@
        <item>
         <widget class="QPushButton" name="clearMemoryButton">
          <property name="text">
-          <string>Clear VRAM</string>
+          <string>清理显存</string>
          </property>
          <property name="flat">
           <bool>true</bool>
@@ -1108,7 +1108,7 @@
    </property>
    <widget class="QMenu" name="menuFile">
     <property name="title">
-     <string>File</string>
+     <string>文件</string>
     </property>
     <addaction name="actionLoad_SavedWorkspace"/>
     <addaction name="actionSave_CurrentWorkspace"/>
@@ -1125,14 +1125,14 @@
    </widget>
    <widget class="QMenu" name="menuEdit">
     <property name="title">
-     <string>Edit</string>
+     <string>编辑</string>
     </property>
     <addaction name="actionTest_2"/>
     <addaction name="actionVR180Mode"/>
    </widget>
    <widget class="QMenu" name="menuView">
     <property name="title">
-     <string>View</string>
+     <string>视图</string>
     </property>
     <addaction name="actionView_Fullscreen_F11"/>
    </widget>
@@ -1142,77 +1142,77 @@
   </widget>
   <action name="actionExit">
    <property name="text">
-    <string>Exit</string>
+    <string>退出</string>
    </property>
   </action>
   <action name="actionLoad_Embeddings">
    <property name="text">
-    <string>Load Embeddings</string>
+    <string>加载嵌入</string>
    </property>
   </action>
   <action name="actionSave_Embeddings">
    <property name="text">
-    <string>Save Embeddings</string>
+    <string>保存嵌入</string>
    </property>
   </action>
   <action name="actionSave_Embeddings_As">
    <property name="text">
-    <string>Save Embeddings As</string>
+    <string>嵌入另存为</string>
    </property>
   </action>
   <action name="actionOpen_Videos_Folder">
    <property name="text">
-    <string>Load Target Images/Videos Folder</string>
+    <string>加载目标图像/视频文件夹</string>
    </property>
   </action>
   <action name="actionOpen_Video_Files">
    <property name="text">
-    <string>Load Target Image/Video Files</string>
+    <string>加载目标图像/视频文件</string>
    </property>
   </action>
   <action name="actionLoad_Source_Images_Folder">
    <property name="text">
-    <string>Load Source Images Folder</string>
+    <string>加载源图像文件夹</string>
    </property>
   </action>
   <action name="actionLoad_Source_Image_Files">
    <property name="text">
-    <string>Load Source Image Files</string>
+    <string>加载源图像文件</string>
    </property>
   </action>
   <action name="actionView_Fullscreen_F11">
    <property name="text">
-    <string>View Fullscreen (F11)</string>
+    <string>全屏查看 (F11)</string>
    </property>
   </action>
   <action name="actionTest">
    <property name="text">
-    <string>Test</string>
+    <string>测试</string>
    </property>
   </action>
   <action name="actionLoad_Saved_Workspace">
    <property name="text">
-    <string>Load Saved Workspace</string>
+    <string>加载已保存的工作区</string>
    </property>
   </action>
   <action name="actionSave_Current_Workspace">
    <property name="text">
-    <string>Save Current Workspace</string>
+    <string>保存当前工作区</string>
    </property>
   </action>
   <action name="actionTest_2">
    <property name="text">
-    <string>Test</string>
+    <string>测试</string>
    </property>
   </action>
   <action name="actionLoad_SavedWorkspace">
    <property name="text">
-    <string>Load Saved Workspace</string>
+    <string>加载已保存的工作区</string>
    </property>
   </action>
   <action name="actionSave_CurrentWorkspace">
    <property name="text">
-    <string>Save Current Workspace</string>
+    <string>保存当前工作区</string>
    </property>
   </action>
   <action name="actionVR180Mode">

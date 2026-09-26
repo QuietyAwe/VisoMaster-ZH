@@ -52,6 +52,9 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.input_faces: Dict[int, widget_components.InputFaceCardButton] = {} #Contains button objects of source faces (images)
         self.merged_embeddings: Dict[int, widget_components.EmbeddingCardButton] = {}
         self.cur_selected_target_face_button: widget_components.TargetFaceCardButton = False
+        # Input face whose target faces stay highlighted (clicked) / are previewed (hovered)
+        self.highlighted_input_face_id = None
+        self.hovered_input_face_id = None
         self.selected_video_button: widget_components.TargetMediaCardButton = False
         self.selected_target_face_id = False
         # '''

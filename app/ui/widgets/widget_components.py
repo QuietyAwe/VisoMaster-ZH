@@ -21,6 +21,74 @@ import app.helpers.miscellaneous as misc_helpers
 if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
 
+# Every target face gets its own colour. Input faces show the colour of the target
+# face they are assigned to, so it is obvious which input face is used where.
+# Dopamine palette: bright, high-saturation colours that stand out clearly on the
+# dark UI. Ordered so that consecutive faces never look alike.
+TARGET_FACE_COLORS = [
+    '#FF4D8D',  # 热粉
+    '#FF8A00',  # 活力橙
+    '#22D3EE',  # 天青
+    '#FFD23F',  # 柠檬黄
+    '#B15CFF',  # 亮紫
+    '#3DDC84',  # 薄荷绿
+    '#FF5C5C',  # 珊瑚红
+    '#4D9CFF',  # 亮蓝
+]
+
+# Used while an input face is blinking to show where it is used.
+FLASH_STYLE = """
+CardButton {
+    border: 4px solid #ffffff;
+    background-color: #f1c40f;
+}
+"""
+
+def hex_to_rgba(color: str, alpha: float) -> str:
+    """'#e67e22' -> 'rgba(230, 126, 34, 0.45)', used for the highlight glow."""
+    color = color.lstrip('#')
+    if len(color) != 6:
+        return 'transparent'
+    red, green, blue = (int(color[index:index + 2], 16) for index in (0, 2, 4))
+    return f'rgba({red}, {green}, {blue}, {alpha})'
+
+def card_button_style(selector: str, border_color: str|None, highlighted: bool = False,
+                      ring_when_checked: bool = False) -> str:
+    """Stylesheet of a face card. `border_color` is the colour of the owning target face (or None).
+
+    `selector` must be the concrete class name (e.g. 'TargetFaceCardButton'): the
+    application stylesheet also styles those classes, and a rule using the base
+    class name ('CardButton') can lose against it.
+
+    `highlighted` draws the thick ring (an input face using it is hovered/clicked),
+    `ring_when_checked` draws the same ring for the currently selected face.
+    """
+    color = border_color if border_color else 'transparent'
+
+    def ring(alpha: float, border_width: int, edge: str|None = None) -> str:
+        # A thick coloured band around a slightly smaller thumbnail: far easier to
+        # spot than a thin border, and identical in the light and the dark theme.
+        return (f'border: {border_width}px solid {edge or color}; '
+                f'background-color: {hex_to_rgba(color, alpha)}; padding: 3px;')
+
+    if highlighted:
+        # White outline + the strongest fill: this is the face an input face points at.
+        normal = ring(0.9, 5, '#ffffff')
+        checked = ring(0.9, 5, '#ffffff')
+    else:
+        normal = f'border: 2px solid {color};'
+        # Softer ring for the face that is simply selected.
+        checked = ring(0.75, 4) if ring_when_checked else f'border: 3px solid {color}; background-color: #555555;'
+
+    return f"""
+    {selector} {{
+        {normal}
+    }}
+    {selector}:checked {{
+        {checked}
+    }}
+    """
+
 class CardButton(QPushButton):
     def __init__(self, *args, **kwargs):
         super().__init__(*args)
@@ -339,15 +407,20 @@ class TargetFaceCardButton(CardButton):
         
         self.setCheckable(True)
         self.clicked.connect(self.load_target_face)
+        # The selected face wears the coloured ring too, and the thumbnail has to
+        # shrink to leave room for it.
+        self.toggled.connect(self.update_icon_size)
 
-        # Imposta lo stylesheet solo per questo pulsante
-        self.setStyleSheet("""
-        CardButton:checked {
-            background-color: #555555;
-            border: 2px solid #1abc9c;
-        }
-        """)
-        
+        # Colour of this target face, (re)assigned by
+        # card_actions.refresh_target_face_colors() from the current list order.
+        self.color = TARGET_FACE_COLORS[0]
+        # Set while an input face using this target face is hovered / selected.
+        self.highlighted = False
+        # Thumbnail size without the highlight ring, captured on the first highlight.
+        self._base_icon_size = None
+
+        self.apply_style()
+
         # Set the context menu policy to trigger the custom context menu on right-click
         self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
         # Connect the custom context menu request signal to the custom slot
@@ -364,8 +437,54 @@ class TargetFaceCardButton(CardButton):
     def get_embedding(self, embedding_swap_model: str) -> np.ndarray:
         return self.embedding_store.get(embedding_swap_model, np.array([]))
 
+    def apply_style(self):
+        # The border shows which target face this is, the ring shows that it is the
+        # one currently being edited (and/or that a hovered input face uses it).
+        self.setStyleSheet(card_button_style(type(self).__name__, self.color,
+                                             self.highlighted, ring_when_checked=True))
+
+    def update_icon_size(self):
+        """Shrink the thumbnail while the coloured ring is shown so it stays visible."""
+        if self._base_icon_size is None:
+            self._base_icon_size = self.iconSize()
+        if not self._base_icon_size.isValid():
+            return
+        if self.highlighted or self.isChecked():
+            self.setIconSize(self._base_icon_size - QtCore.QSize(7, 7))
+        else:
+            self.setIconSize(self._base_icon_size)
+
+    def set_color(self, color: str):
+        if self.color != color:
+            self.color = color
+            self.apply_style()
+
+    def set_highlighted(self, highlighted: bool):
+        highlighted = bool(highlighted)
+        if self.highlighted == highlighted:
+            return
+        self.highlighted = highlighted
+        self.apply_style()
+        self.update_icon_size()
+
+    def deselect_target_face(self):
+        """Stop editing this face. Clicking the face being edited a second time does this."""
+        main_window = self.main_window
+        main_window.cur_selected_target_face_button = False
+        main_window.selected_target_face_id = False
+        card_actions.uncheck_all_input_faces(main_window)
+        card_actions.uncheck_all_merged_embeddings(main_window)
+        common_widget_actions.set_widgets_values_using_face_id_parameters(main_window, face_id=False)
+        card_actions.refresh_input_faces_usage_markers(main_window)
+
     def load_target_face(self):
         main_window = self.main_window
+        # Qt already flipped the check state: a second click on the face that is
+        # being edited means "deselect it".
+        if main_window.cur_selected_target_face_button == self and not self.isChecked():
+            self.deselect_target_face()
+            return
+
         main_window.cur_selected_target_face_button = self
         self.setChecked(True)
         for _, target_face_button in main_window.target_faces.items():
@@ -388,6 +507,35 @@ class TargetFaceCardButton(CardButton):
         # common_widget_actions.refresh_frame(main_window)
 
         main_window.current_widget_parameters = main_window.parameters[self.face_id].copy()
+
+        card_actions.refresh_input_faces_usage_markers(main_window)
+        self.reveal_assigned_input_faces()
+
+    def reveal_assigned_input_faces(self):
+        """Scroll the input faces list to the faces replacing this target face and blink them."""
+        main_window = self.main_window
+        input_faces = getattr(main_window, 'input_faces', None)
+        if not input_faces or not self.assigned_input_faces:
+            return
+
+        list_widget = getattr(main_window, 'inputFacesList', None)
+        first_item = None
+        for input_face_id in self.assigned_input_faces:
+            input_face = input_faces.get(input_face_id)
+            if input_face is None:
+                continue
+            list_item = getattr(input_face, 'list_item', None)
+            if list_item is None:
+                continue
+            # Show it even when the search filter currently hides it.
+            if list_item.isHidden():
+                list_item.setHidden(False)
+            input_face.flash()
+            if first_item is None:
+                first_item = list_item
+
+        if first_item is not None and list_widget is not None:
+            list_widget.scrollToItem(first_item, QtWidgets.QAbstractItemView.ScrollHint.PositionAtCenter)
 
     def calculate_assigned_input_embedding(self):
         control = self.main_window.control.copy()
@@ -466,10 +614,12 @@ class TargetFaceCardButton(CardButton):
 
         # Otherwise reset parameter widgets value to the default
         else:
+            main_window.cur_selected_target_face_button = False
             common_widget_actions.set_widgets_values_using_face_id_parameters(main_window, face_id=False)
             main_window.selected_target_face_id = False
 
         video_control_actions.remove_face_parameters_and_control_from_markers(main_window, self.face_id) #Remove parameters for the face from all markers
+        card_actions.refresh_input_faces_usage_markers(main_window)
         common_widget_actions.refresh_frame(self.main_window)
         self.deleteLater()
 
@@ -508,13 +658,12 @@ class InputFaceCardButton(CardButton):
         self.setToolTip(media_path)
         self.clicked.connect(self.load_input_face)
 
-        # Imposta lo stylesheet solo per questo pulsante
-        self.setStyleSheet("""
-        CardButton:checked {
-            background-color: #555555;
-            border: 2px solid #1abc9c;
-        }
-        """)
+        # Colour of the target face this input face is assigned to (None = unused).
+        self.usage_color: str|None = None
+        self.flashing = False
+        self._flash_timer: QtCore.QTimer|None = None
+        self._flash_steps = 0
+        self.apply_style()
 
         # Set the context menu policy to trigger the custom context menu on right-click
         self.setContextMenuPolicy(QtCore.Qt.CustomContextMenu)
@@ -527,6 +676,54 @@ class InputFaceCardButton(CardButton):
 
     def get_embedding(self, embedding_swap_model: str) -> np.ndarray:
         return self.embedding_store.get(embedding_swap_model, np.array([]))
+
+    def apply_style(self):
+        # The border shows which target face uses this input face.
+        if self.flashing:
+            self.setStyleSheet(FLASH_STYLE.replace('CardButton', type(self).__name__))
+        else:
+            self.setStyleSheet(card_button_style(type(self).__name__, self.usage_color))
+
+    def flash(self, times: int = 2, interval: int = 200):
+        """Blink this card `times` times so it can be located in a long list."""
+        if self._flash_timer is None:
+            self._flash_timer = QtCore.QTimer(self)
+            self._flash_timer.timeout.connect(self._flash_step)
+        else:
+            self._flash_timer.stop()
+        # Start lit, then toggle: on -> off -> on -> off, so it always ends unlit.
+        self._flash_steps = max(int(times), 1) * 2 - 1
+        self.flashing = True
+        self.apply_style()
+        self._flash_timer.start(int(interval))
+
+    def _flash_step(self):
+        self.flashing = not self.flashing
+        self.apply_style()
+        self._flash_steps -= 1
+        if self._flash_steps <= 0:
+            self._flash_timer.stop()
+            self.flashing = False
+            self.apply_style()
+
+    def set_usage_color(self, color: str|None):
+        """Mark this input face as being used by the target face owning `color`."""
+        if self.usage_color != color:
+            self.usage_color = color
+            self.apply_style()
+
+    def enterEvent(self, event):
+        # Preview: highlight the target faces using this input face while hovering.
+        if self.main_window:
+            self.main_window.hovered_input_face_id = self.face_id
+            card_actions.refresh_target_face_highlights(self.main_window)
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):
+        if self.main_window and getattr(self.main_window, 'hovered_input_face_id', None) == self.face_id:
+            self.main_window.hovered_input_face_id = None
+            card_actions.refresh_target_face_highlights(self.main_window)
+        super().leaveEvent(event)
 
     def load_input_face(self):
         main_window = self.main_window
@@ -581,6 +778,9 @@ class InputFaceCardButton(CardButton):
                     if input_face_button!=self:
                         input_face_button.setChecked(False)
 
+        # Keep the target faces using this input face highlighted after the click.
+        main_window.highlighted_input_face_id = self.face_id
+        card_actions.refresh_input_faces_usage_markers(main_window)
         common_widget_actions.refresh_frame(main_window)
         
     def remove_input_face_from_list(self):
@@ -588,9 +788,14 @@ class InputFaceCardButton(CardButton):
         i = self.get_item_position()
         main_window.inputFacesList.takeItem(i)   
         main_window.input_faces.pop(self.face_id)
+        if getattr(main_window, 'highlighted_input_face_id', None) == self.face_id:
+            main_window.highlighted_input_face_id = None
+        if getattr(main_window, 'hovered_input_face_id', None) == self.face_id:
+            main_window.hovered_input_face_id = None
         for target_face_id in main_window.target_faces:
             main_window.target_faces[target_face_id].remove_assigned_input_face(self.face_id)
 
+        card_actions.refresh_input_faces_usage_markers(main_window)
         common_widget_actions.refresh_frame(self.main_window)
         self.deleteLater()
         # If the input faces list is empty, show the placeholder text

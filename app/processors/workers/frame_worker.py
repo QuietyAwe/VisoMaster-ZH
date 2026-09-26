@@ -54,6 +54,13 @@ class FrameWorker(threading.Thread):
         self.VR_DYNAMIC_FOV_PADDING_FACTOR = 1.15 # Padding factor for dynamic FOV calculation
         self.is_view_face_compare: bool = False
         self.is_view_face_mask: bool = False
+        # Monotonic sequence number, assigned by VideoProcessor when the worker is
+        # started. It keeps the temporal state ordered even though several frames
+        # are processed in parallel (and the webcam never advances frame_number).
+        self.temporal_sequence: int|None = None
+        # For every detected face: the ordered list of (target_face_id, similarity)
+        # that this frame should apply.
+        self.target_matches: list = []
 
     def run(self):
         try:
@@ -292,6 +299,88 @@ class FrameWorker(threading.Thread):
                 
         return best_target_button, best_params_pd, highest_sim
 
+    def get_parameter(self, face_id, key: str, default):
+        """Read a per target face parameter, falling back to the default value."""
+        parameters = self.parameters.get(face_id)
+        if parameters is None:
+            parameters = self.main_window.default_parameters
+        try:
+            value = parameters[key]
+        except (KeyError, TypeError):
+            value = self.main_window.default_parameters.get(key, default)
+        return default if value is None else value
+
+    def resolve_target_matches(self, det_faces_data: list, control: dict):
+        """Fill self.target_matches with, for every detected face, the ordered list of
+        (target_face_id, similarity) pairs that this frame should apply.
+
+        When temporal stabilisation is enabled the similarity is smoothed across
+        frames, a locked face only has to reach the lower hold threshold and the
+        detected keypoints are replaced by their 1 Euro filtered version.
+        """
+        targets_by_id = {target_face.face_id: target_face for target_face in self.main_window.target_faces.values()}
+        recognition_model = control['RecognitionModelSelection']
+
+        sims_per_detection = []
+        for fface in det_faces_data:
+            sims = {}
+            for face_id, target_face in targets_by_id.items():
+                sims[face_id] = float(self.models_processor.findCosineDistance(
+                    fface['embedding'], target_face.get_embedding(recognition_model)))
+            sims_per_detection.append(sims)
+
+        thresholds = {face_id: float(self.get_parameter(face_id, 'SimilarityThresholdSlider', 60.0))
+                      for face_id in targets_by_id}
+
+        temporal_state = getattr(self.video_processor, 'temporal_state', None)
+        if not control.get('TemporalStabilizationToggle', False) or self.is_single_frame or temporal_state is None:
+            # Stateless behaviour, identical to the original pipeline.
+            self.target_matches = [
+                [(face_id, sims[face_id]) for face_id in targets_by_id
+                 if sims.get(face_id, -1.0) >= thresholds.get(face_id, 60.0)]
+                for sims in sims_per_detection
+            ]
+            return
+
+        hysteresis = {face_id: float(self.get_parameter(face_id, 'SimilarityHysteresisSlider', 8.0))
+                      for face_id in targets_by_id}
+        smoothing = {face_id: float(self.get_parameter(face_id, 'SimilaritySmoothingSlider', 50.0)) / 100.0
+                     for face_id in targets_by_id}
+
+        freq = 0.0
+        if control.get('VideoPlaybackCustomFpsToggle', False):
+            freq = float(control.get('VideoPlaybackCustomFpsSlider', 0) or 0)
+        if freq <= 0.0:
+            freq = float(getattr(self.video_processor, 'fps', 0) or 0)
+        if freq <= 0.0:
+            freq = 30.0
+
+        detections = [
+            {'bbox': fface.get('bbox'), 'kps_5': fface.get('kps_5'), 'kps_all': fface.get('kps_all'), 'sims': sims}
+            for fface, sims in zip(det_faces_data, sims_per_detection)
+        ]
+
+        sequence = self.temporal_sequence if self.temporal_sequence is not None else self.frame_number
+        decisions = temporal_state.commit(
+            sequence=sequence,
+            detections=detections,
+            thresholds=thresholds,
+            hysteresis=hysteresis,
+            smoothing=smoothing,
+            freq=freq,
+            max_missed=int(control.get('MaxMissedFramesSlider', 2)),
+            keypoint_smoothing=bool(control.get('KeypointSmoothingToggle', True)),
+            min_cutoff=float(control.get('KeypointSmoothingMinCutoffDecimalSlider', 1.0)),
+            beta=float(control.get('KeypointSmoothingBetaDecimalSlider', 0.01)),
+        )
+
+        self.target_matches = []
+        for fface, decision in zip(det_faces_data, decisions):
+            if decision.get('kps_5') is not None:
+                fface['kps_5'] = decision['kps_5']
+            if decision.get('kps_all') is not None:
+                fface['kps_all'] = decision['kps_all']
+            self.target_matches.append(list(decision.get('matches') or []))
 
     def process_frame(self, control: dict): # control is passed in
         # Input self.frame is HxWxC RGB uint8 NumPy array
@@ -535,41 +624,50 @@ class FrameWorker(threading.Thread):
                     face_emb, _ = self.models_processor.run_recognize_direct(img_for_detection_and_swap, face_kps_5, control['SimilarityTypeSelection'], control['RecognitionModelSelection'])
                     det_faces_data_for_display.append({'kps_5': face_kps_5, 'kps_all': face_kps_all, 'embedding': face_emb, 'bbox': bboxes_std[i]})
 
+            # Decide which target face (if any) belongs to every detected face. With
+            # temporal stabilisation enabled this also smooths the keypoints in place.
+            self.resolve_target_matches(det_faces_data_for_display, control)
+
             # Main processing loop for standard path
             if det_faces_data_for_display:
-                for fface_data in det_faces_data_for_display:
-                    best_target_button_std, best_params_pd_std, _ = self._find_best_target_match(
-                        fface_data['embedding'], control
-                    )
-                    if best_target_button_std is not None:
+                for i, fface_data in enumerate(det_faces_data_for_display):
+                    for target_face_id, _sim in self.target_matches[i]:
+                        target_face = self.main_window.target_faces.get(target_face_id)
+                        if target_face is None:
+                            continue
+                        best_params_pd_std = ParametersDict(
+                            self.parameters.get(target_face.face_id, {}),
+                            dict(self.main_window.default_parameters) if isinstance(self.main_window.default_parameters, ParametersDict) else self.main_window.default_parameters,
+                        )
                         if swap_button_is_checked_global or edit_button_is_checked_global:
                             arcface_model_for_swap_std = self.models_processor.get_arcface_model(best_params_pd_std['SwapModelSelection'])
                             s_e_np = None
-                            if swap_button_is_checked_global:
-                                s_e_np = best_target_button_std.assigned_input_embedding.get(arcface_model_for_swap_std) if best_target_button_std.assigned_input_embedding else None
-                                if s_e_np is None or not isinstance(s_e_np, np.ndarray) or s_e_np.size == 0 or np.isnan(s_e_np).any() or np.isinf(s_e_np).any():
-                                    s_e_np = None # Invalidate
-
-                            t_e_np = best_target_button_std.get_embedding(arcface_model_for_swap_std)
-                                
                             dfm_model_instance_local = None
-                            if best_params_pd_std['SwapModelSelection'] == 'DeepFaceLive (DFM)':
-                                dfm_model_name = best_params_pd_std['DFMModelSelection']
-                                if dfm_model_name:
-                                    dfm_model_instance_local = self.models_processor.load_dfm_model(dfm_model_name)
-                            
-                            if s_e_np is not None or (best_params_pd_std['SwapModelSelection'] == 'DeepFaceLive (DFM)' and dfm_model_instance_local is not None):
-                                kps_5_adjusted = self.keypoints_adjustments(fface_data['kps_5'].copy(), best_params_pd_std)
-                                img_for_detection_and_swap, original_face_comp, swap_mask_comp = self.swap_core(
-                                    img_for_detection_and_swap,
-                                    kps_5_adjusted,
-                                    s_e=s_e_np, t_e=t_e_np,
-                                    parameters=best_params_pd_std, control=control,
-                                    dfm_model_instance=dfm_model_instance_local,
-                                    is_perspective_crop=False # Standard path
-                                )
-                                fface_data['original_face'] = original_face_comp
-                                fface_data['swap_mask'] = swap_mask_comp
+                            if swap_button_is_checked_global:
+                                if best_params_pd_std['SwapModelSelection'] != 'DeepFaceLive (DFM)':
+                                    s_e_np = target_face.assigned_input_embedding.get(arcface_model_for_swap_std) if target_face.assigned_input_embedding else None
+                                    if s_e_np is None or not isinstance(s_e_np, np.ndarray) or s_e_np.size == 0 or np.isnan(s_e_np).any() or np.isinf(s_e_np).any():
+                                        s_e_np = None # Invalidate
+                                else:
+                                    dfm_model_name = best_params_pd_std['DFMModelSelection']
+                                    if dfm_model_name:
+                                        dfm_model_instance_local = self.models_processor.load_dfm_model(dfm_model_name)
+
+                            t_e_np = target_face.get_embedding(arcface_model_for_swap_std)
+
+                            # swap_core also returns the original face and the swap mask used
+                            # by the compare view, so call it whenever swap or edit is active.
+                            kps_5_adjusted = self.keypoints_adjustments(fface_data['kps_5'].copy(), best_params_pd_std)
+                            img_for_detection_and_swap, original_face_comp, swap_mask_comp = self.swap_core(
+                                img_for_detection_and_swap,
+                                kps_5_adjusted,
+                                s_e=s_e_np, t_e=t_e_np,
+                                parameters=best_params_pd_std, control=control,
+                                dfm_model_instance=dfm_model_instance_local,
+                                is_perspective_crop=False # Standard path
+                            )
+                            fface_data['original_face'] = original_face_comp
+                            fface_data['swap_mask'] = swap_mask_comp
                             
                         if edit_button_is_checked_global:
                             img_for_detection_and_swap = self.swap_edit_face_core(
@@ -703,38 +801,43 @@ class FrameWorker(threading.Thread):
         # img_hwc_rgb_uint8 is HxWxC, Torch tensor on GPU
         img_hwc_rgb_uint8_out = img_hwc_rgb_uint8.clone() # Work on a clone
         point_thickness = 2 # Point thickness
-        
-        for fface_data in det_faces_data:
-            # Determine parameters and keypoints to draw for this detected face
-            # This logic assumes det_faces_data contains faces that might match a target_face
-            # For simplicity, we'll use default color if no match or specific settings found.
-            
-            keypoints_to_draw = fface_data.get('kps_all') # Default to all keypoints
-            landmark_color_rgb = (0, 255, 255) # Default color (Cyan for 'all') # RGB
+        default_params_dict = dict(self.main_window.default_parameters) if isinstance(self.main_window.default_parameters, ParametersDict) else self.main_window.default_parameters
 
-            # Check if this detected face matches any target face to use specific settings
-           
-            # Find the best matching target for this detected face
-            _, matched_params_for_paint, _ = self._find_best_target_match(fface_data['embedding'], control)
+        for i, fface_data in enumerate(det_faces_data):
+            # One (keypoints, colour) pair per matched target face: the parameters of
+            # every matched target decide which keypoints are drawn and in which colour.
+            items_to_draw = []
+            matches = self.target_matches[i] if i < len(self.target_matches) else []
+            if not matches:
+                # No matched target face: draw all keypoints with the default colour
+                keypoints_to_draw = fface_data.get('kps_all') if fface_data.get('kps_all') is not None else fface_data.get('kps_5')
+                items_to_draw.append((keypoints_to_draw, (0, 255, 255)))
+            for target_face_id, _sim in matches:
+                target_face = self.main_window.target_faces.get(target_face_id)
+                if target_face is None:
+                    continue
+                matched_params_for_paint = ParametersDict(self.parameters.get(target_face.face_id, {}), default_params_dict)
+                if matched_params_for_paint['LandmarksPositionAdjEnableToggle']:
+                    items_to_draw.append((fface_data.get('kps_5'), (255, 0, 0))) # Red for adjusted 5 points (RGB)
+                else:
+                    keypoints_to_draw = fface_data.get('kps_all') # Default to all keypoints
+                    if keypoints_to_draw is None: # Fallback if kps_all is missing
+                        keypoints_to_draw = fface_data.get('kps_5')
+                    items_to_draw.append((keypoints_to_draw, (0, 255, 255))) # Cyan for 'all'
 
-            if matched_params_for_paint and matched_params_for_paint['LandmarksPositionAdjEnableToggle']:
-                keypoints_to_draw = fface_data.get('kps_5')
-                landmark_color_rgb = (255, 0, 0) # Red for adjusted 5 points (RGB)
-            elif keypoints_to_draw is None and fface_data.get('kps_5') is not None: # Fallback if kps_all is missing
-                 keypoints_to_draw = fface_data.get('kps_5') # Still use default color
-            
-            if keypoints_to_draw is not None:
-                for kpoint in keypoints_to_draw:
-                    kx, ky = int(kpoint[0]), int(kpoint[1]) # kpoint is [x,y]
-                    for i_offset in range(-point_thickness // 2, point_thickness // 2 + 1):
-                        for j_offset in range(-point_thickness // 2, point_thickness // 2 + 1):
-                            final_y, final_x = ky + i_offset, kx + j_offset
-                            # Boundary checks
-                            if 0 <= final_y < img_hwc_rgb_uint8_out.shape[0] and \
-                               0 <= final_x < img_hwc_rgb_uint8_out.shape[1]:
-                                img_hwc_rgb_uint8_out[final_y, final_x, 0] = landmark_color_rgb[0]
-                                img_hwc_rgb_uint8_out[final_y, final_x, 1] = landmark_color_rgb[1] # G
-                                img_hwc_rgb_uint8_out[final_y, final_x, 2] = landmark_color_rgb[2] # B
+            for keypoints_to_draw, landmark_color_rgb in items_to_draw:
+                if keypoints_to_draw is not None:
+                    for kpoint in keypoints_to_draw:
+                        kx, ky = int(kpoint[0]), int(kpoint[1]) # kpoint is [x,y]
+                        for i_offset in range(-point_thickness // 2, point_thickness // 2 + 1):
+                            for j_offset in range(-point_thickness // 2, point_thickness // 2 + 1):
+                                final_y, final_x = ky + i_offset, kx + j_offset
+                                # Boundary checks
+                                if 0 <= final_y < img_hwc_rgb_uint8_out.shape[0] and \
+                                   0 <= final_x < img_hwc_rgb_uint8_out.shape[1]:
+                                    img_hwc_rgb_uint8_out[final_y, final_x, 0] = landmark_color_rgb[0]
+                                    img_hwc_rgb_uint8_out[final_y, final_x, 1] = landmark_color_rgb[1] # G
+                                    img_hwc_rgb_uint8_out[final_y, final_x, 2] = landmark_color_rgb[2] # B
         return img_hwc_rgb_uint8_out
 
     def draw_bounding_boxes_on_detected_faces(self, img_cxhxw_rgb_uint8: torch.Tensor, det_faces_data: list, control: dict) -> torch.Tensor:
@@ -779,17 +882,16 @@ class FrameWorker(threading.Thread):
         # img_cxhxw_rgb_uint8 is CxHxW, Torch tensor on GPU
         imgs_to_vstack = []
         
-        for fface_data in det_faces_data:
+        default_params_dict = dict(self.main_window.default_parameters) if isinstance(self.main_window.default_parameters, ParametersDict) else self.main_window.default_parameters
 
-            # Find the best matching target face for this detected face
-            best_target_for_compare, parameters_for_face, _ = self._find_best_target_match(
-                fface_data['embedding'], control
-            )
-
-            if best_target_for_compare and parameters_for_face:
-                # parameters_for_face is already a ParametersDict from _find_best_target_match
-                # If not, it would need to be constructed:
-                # parameters_for_face = ParametersDict(self.parameters.get(best_target_for_compare.face_id, {}), dict(self.main_window.default_parameters))
+        for i, fface_data in enumerate(det_faces_data):
+            # One comparison strip per matched target face (ordered by self.target_matches)
+            matches = self.target_matches[i] if i < len(self.target_matches) else []
+            for target_face_id, _sim in matches:
+                target_face = self.main_window.target_faces.get(target_face_id)
+                if target_face is None:
+                    continue
+                parameters_for_face = ParametersDict(self.parameters.get(target_face.face_id, {}), default_params_dict)
 
                 modified_face_512 = self.get_cropped_face_using_kps(img_cxhxw_rgb_uint8, fface_data['kps_5'], parameters_for_face)
                 
