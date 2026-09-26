@@ -16,6 +16,7 @@ import pyvirtualcam
 from PySide6.QtCore import QObject, QTimer, Signal, Slot
 from PySide6.QtGui import QPixmap
 from app.processors.workers.frame_worker import FrameWorker
+from app.processors.workers.temporal_state import TemporalStateManager
 from app.ui.widgets.actions import graphics_view_actions
 from app.ui.widgets.actions import common_actions as common_widget_actions
 
@@ -46,6 +47,12 @@ class VideoProcessor(QObject):
 
         self.current_frame: numpy.ndarray = []
         self.recording = False
+
+        # Cross frame temporal state (face slots, similarity smoothing, keypoint filters).
+        # It has to live here because every frame gets its own FrameWorker instance.
+        self.temporal_state = TemporalStateManager()
+        self._temporal_sequence = 0
+        self._temporal_sequence_lock = threading.Lock()
 
         self.virtcam: pyvirtualcam.Camera|None = None
 
@@ -149,6 +156,22 @@ class VideoProcessor(QObject):
             except Exception as e:
                 print(e)
 
+    def reset_temporal_state(self):
+        """Forget every tracked face. Called on seek, stop, media change, ..."""
+        with self._temporal_sequence_lock:
+            self._temporal_sequence = 0
+        self.temporal_state.reset()
+
+    def next_temporal_sequence(self) -> int:
+        """Monotonic sequence used to keep the temporal state ordered.
+
+        Frames are processed by several threads in parallel and the webcam never
+        advances `current_frame_number`, so the frame number cannot be used.
+        """
+        with self._temporal_sequence_lock:
+            self._temporal_sequence += 1
+            return self._temporal_sequence
+
     def set_number_of_threads(self, value):
         self.stop_processing()
         self.main_window.models_processor.set_number_of_threads(value)
@@ -161,7 +184,10 @@ class VideoProcessor(QObject):
         if self.processing:
             print("Processing already in progress. Ignoring start request.")
             return
-            
+
+        # A new playback session starts here, drop the faces tracked previously.
+        self.reset_temporal_state()
+
         # Re-initialize the timers
         self.frame_display_timer = QTimer()
         self.frame_read_timer = QTimer()
@@ -251,6 +277,9 @@ class VideoProcessor(QObject):
     def start_frame_worker(self, frame_number, frame, is_single_frame=False):
         """Start a FrameWorker to process the given frame."""
         worker = FrameWorker(frame, self.main_window, frame_number, self.frame_queue, is_single_frame)
+        # Assigned here (in frame order, on the caller thread) so that the temporal
+        # state can be committed in order even though the workers run in parallel.
+        worker.temporal_sequence = self.next_temporal_sequence()
         self.threads[frame_number] = worker
         if is_single_frame:
             worker.run()
@@ -261,6 +290,10 @@ class VideoProcessor(QObject):
 
         # print("\nCalled process_current_frame()",self.current_frame_number)
         # self.main_window.processed_frames.clear()
+
+        # Single frame rendering (seek, image, marker jump) is stateless, the
+        # tracked faces of the previous position are not valid any more.
+        self.reset_temporal_state()
 
         self.next_frame_to_display = self.current_frame_number
         if self.file_type == 'video' and self.media_capture:
@@ -342,6 +375,10 @@ class VideoProcessor(QObject):
 
             with self.frame_queue.mutex:
                 self.frame_queue.queue.clear()
+
+            # Playback stopped: the tracked faces are stale, and any worker still
+            # waiting for its turn in the temporal state has to be released.
+            self.reset_temporal_state()
 
             self.current_frame_number = self.main_window.videoSeekSlider.value()
             self.media_capture.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_number)

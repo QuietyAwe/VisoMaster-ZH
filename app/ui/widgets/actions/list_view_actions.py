@@ -50,6 +50,9 @@ def add_media_thumbnail_button(main_window: 'MainWindow', buttonClass: 'widget_c
     button.setCheckable(True)
     if buttonClass in [widget_components.TargetFaceCardButton, widget_components.InputFaceCardButton]:
         buttons_list[button.face_id] = button
+        if buttonClass == widget_components.TargetFaceCardButton:
+            # Keep the colours of all target faces distinct and compact.
+            card_actions.refresh_target_face_colors(main_window)
     elif buttonClass == widget_components.TargetMediaCardButton:
         buttons_list[button.media_id] = button
     elif buttonClass == widget_components.EmbeddingCardButton:

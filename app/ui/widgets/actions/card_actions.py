@@ -25,6 +25,7 @@ def clear_target_faces(main_window: 'MainWindow', refresh_frame=True):
     main_window.parameters = {}
 
     main_window.selected_target_face_id = False
+    refresh_input_faces_usage_markers(main_window)
     # Set Parameter widget values to default
     common_widget_actions.set_widgets_values_using_face_id_parameters(main_window=main_window, face_id=False)
     if refresh_frame:
@@ -40,6 +41,7 @@ def clear_input_faces(main_window: 'MainWindow'):
     for _, target_face in main_window.target_faces.items():
         target_face.assigned_input_faces = {}
         target_face.calculate_assigned_input_embedding()
+    refresh_input_faces_usage_markers(main_window)
     common_widget_actions.refresh_frame(main_window=main_window)
 
 def clear_merged_embeddings(main_window: 'MainWindow'):
@@ -57,6 +59,63 @@ def uncheck_all_input_faces(main_window: 'MainWindow'):
     # Uncheck All other input faces 
     for _, input_face_button in main_window.input_faces.items():
         input_face_button.setChecked(False)
+
+def refresh_target_face_colors(main_window: 'MainWindow'):
+    """Give every existing target face its own colour, following the list order.
+
+    Colours are (re)assigned from the current list instead of a global counter, so
+    scanning more faces (which only appends to the list) can never exhaust the
+    palette, and deleting a face keeps the remaining colours compact.
+    """
+    # Imported here to avoid a circular import at module load time.
+    from app.ui.widgets import widget_components
+
+    colors = widget_components.TARGET_FACE_COLORS
+    for index, target_face in enumerate(main_window.target_faces.values()):
+        target_face.set_color(colors[index % len(colors)])
+
+def refresh_target_face_highlights(main_window: 'MainWindow'):
+    """Highlight the target faces that use the input face being hovered / clicked.
+
+    Hovering wins over the clicked one, so moving the mouse over another input
+    face previews its target faces and moving away restores the clicked state.
+    """
+    if not main_window.target_faces:
+        return
+    face_id = (getattr(main_window, 'hovered_input_face_id', None)
+               or getattr(main_window, 'highlighted_input_face_id', None))
+    for target_face in main_window.target_faces.values():
+        target_face.set_highlighted(bool(face_id) and face_id in target_face.assigned_input_faces)
+
+def refresh_input_faces_usage_markers(main_window: 'MainWindow'):
+    """Colour the border of every input face with the colour of the target face using it.
+
+    An input face that is not assigned to any target face gets no border.
+    """
+    refresh_target_face_colors(main_window)
+    refresh_target_face_highlights(main_window)
+
+    if not main_window.input_faces:
+        return
+
+    target_faces = list(main_window.target_faces.values())
+    current_target_face = getattr(main_window, 'cur_selected_target_face_button', False)
+    # The target face being edited wins: an input face assigned to several target
+    # faces is shown in the colour of the one that is currently selected.
+    if current_target_face and current_target_face in target_faces:
+        target_faces.remove(current_target_face)
+        target_faces.insert(0, current_target_face)
+
+    owner_colors: Dict[str, str] = {}
+    for target_face in target_faces:
+        color = getattr(target_face, 'color', None)
+        if not color:
+            continue
+        for input_face_id in target_face.assigned_input_faces:
+            owner_colors.setdefault(input_face_id, color)
+
+    for input_face_id, input_face_button in main_window.input_faces.items():
+        input_face_button.set_usage_color(owner_colors.get(input_face_id))
 
 def uncheck_all_merged_embeddings(main_window: 'MainWindow'):
     for _, embed_button in  main_window.merged_embeddings.items():

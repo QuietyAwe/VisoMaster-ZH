@@ -23,31 +23,31 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
     'Face Restorer': {
         'FaceRestorerEnableToggle': {
             'level': 1,
-            'label': 'Enable Face Restorer',
+            'label': '启用面部修复',
             'default': False,
-            'help': 'Enable the use of a face restoration model to improve the quality of the face after swapping.'
+            'help': '启用面部修复模型，以提升交换后面部的质量。'
         },
         'FaceRestorerTypeSelection': {
             'level': 2,
-            'label': 'Restorer Type',
+            'label': '修复类型',
             'options': ['GFPGAN-v1.4', 'CodeFormer', 'GPEN-256', 'GPEN-512', 'GPEN-1024', 'GPEN-2048', 'RestoreFormer++', 'VQFR-v2'],
             'default': 'GFPGAN-v1.4',
             'parentToggle': 'FaceRestorerEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Select the model type for face restoration.'
+            'help': '选择面部修复的模型类型。'
         },
         'FaceRestorerDetTypeSelection': {
             'level': 2,
-            'label': 'Alignment',
+            'label': '对齐方式',
             'options': ['Original', 'Blend', 'Reference'],
             'default': 'Original',
             'parentToggle': 'FaceRestorerEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Select the alignment method for restoring the face to its original or blended position.'
+            'help': '选择修复面部时将其恢复到原始位置、混合位置或参考位置的对齐方法。'
         },
         'FaceFidelityWeightDecimalSlider': {
             'level': 2,
-            'label': 'Fidelity Weight',
+            'label': '保真度权重',
             'min_value': '0.0',
             'max_value': '1.0',
             'default': '0.9',
@@ -55,46 +55,46 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'step': 0.1,
             'parentToggle': 'FaceRestorerEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Adjust the fidelity weight to control how closely the restoration preserves the original face details.'
+            'help': '调整保真度权重，控制修复时保留原始面部细节的程度。'
         },
         'FaceRestorerBlendSlider': {
             'level': 2,
-            'label': 'Blend',
+            'label': '混合比例',
             'min_value': '0',
             'max_value': '100',
             'default': '100',
             'step': 1,
             'parentToggle': 'FaceRestorerEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Control the blend ratio between the restored face and the swapped face.'
+            'help': '控制修复后的面部与交换面部之间的混合比例。'
         },
         'FaceRestorerEnable2Toggle': {
             'level': 1,
-            'label': 'Enable Face Restorer 2',
+            'label': '启用面部修复 2',
             'default': False,
-            'help': 'Enable the use of a face restoration model to improve the quality of the face after swapping.'
+            'help': '启用第二个面部修复模型，以提升交换后面部的质量。'
         },
         'FaceRestorerType2Selection': {
             'level': 2,
-            'label': 'Restorer Type',
+            'label': '修复类型',
             'options': ['GFPGAN-v1.4', 'CodeFormer', 'GPEN-256', 'GPEN-512', 'GPEN-1024', 'GPEN-2048', 'RestoreFormer++', 'VQFR-v2'],
             'default': 'GFPGAN-v1.4',
             'parentToggle': 'FaceRestorerEnable2Toggle',
             'requiredToggleValue': True,
-            'help': 'Select the model type for face restoration.'
+            'help': '选择面部修复的模型类型。'
         },
         'FaceRestorerDetType2Selection': {
             'level': 2,
-            'label': 'Alignment',
+            'label': '对齐方式',
             'options': ['Original', 'Blend', 'Reference'],
             'default': 'Original',
             'parentToggle': 'FaceRestorerEnable2Toggle',
             'requiredToggleValue': True,
-            'help': 'Select the alignment method for restoring the face to its original or blended position.'
+            'help': '选择修复面部时将其恢复到原始位置、混合位置或参考位置的对齐方法。'
         },
         'FaceFidelityWeight2DecimalSlider': {
             'level': 2,
-            'label': 'Fidelity Weight',
+            'label': '保真度权重',
             'min_value': '0.0',
             'max_value': '1.0',
             'default': '0.9',
@@ -102,28 +102,28 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'step': 0.1,
             'parentToggle': 'FaceRestorerEnable2Toggle',
             'requiredToggleValue': True,
-            'help': 'Adjust the fidelity weight to control how closely the restoration preserves the original face details.'
+            'help': '调整保真度权重，控制修复时保留原始面部细节的程度。'
         },
         'FaceRestorerBlend2Slider': {
             'level': 2,
-            'label': 'Blend',
+            'label': '混合比例',
             'min_value': '0',
             'max_value': '100',
             'default': '100',
             'step': 1,
             'parentToggle': 'FaceRestorerEnable2Toggle',
             'requiredToggleValue': True,
-            'help': 'Control the blend ratio between the restored face and the swapped face.'
+            'help': '控制修复后的面部与交换面部之间的混合比例。'
         },
         'FaceExpressionEnableToggle': {
             'level': 1,
-            'label': 'Enable Face Expression Restorer',
+            'label': '启用面部表情修复',
             'default': False,
-            'help': 'Enabled the use of the LivePortrait face expression model to restore facial expressions after swapping.'
+            'help': '启用 LivePortrait 面部表情模型，以在交换后恢复面部表情。'
         },
         'FaceExpressionCropScaleDecimalSlider': {
             'level': 2,
-            'label': 'Crop Scale',
+            'label': '裁剪比例',
             'min_value': '1.80',
             'max_value': '3.00',
             'default': '2.30',
@@ -131,11 +131,11 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'decimals': 2,
             'parentToggle': 'FaceExpressionEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Changes swap crop scale. Increase the value to capture the face more distantly.'
+            'help': '调整裁剪比例，增大值以更远距离捕获面部。'
         },
         'FaceExpressionVYRatioDecimalSlider': {
             'level': 2,
-            'label': 'VY Ratio',
+            'label': 'VY比例',
             'min_value': '-0.125',
             'max_value': '-0.100',
             'default': '-0.125',
@@ -143,11 +143,11 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'decimals': 3,
             'parentToggle': 'FaceExpressionEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Changes the vy ratio for crop scale. Increase the value to capture the face more distantly.'
+            'help': '调整裁剪比例的 VY 值，增大值以更远距离捕获面部。'
         },
         'FaceExpressionFriendlyFactorDecimalSlider': {
             'level': 2,
-            'label': 'Expression Friendly Factor',
+            'label': '表情友好系数',
             'min_value': '0.0',
             'max_value': '1.0',
             'default': '1.0',
@@ -155,28 +155,28 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'step': 0.1,
             'parentToggle': 'FaceExpressionEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Control the expression similarity between the driving face and the swapped face.'
+            'help': '控制驱动面部与交换面部之间的表情相似度。'
         },
         'FaceExpressionAnimationRegionSelection': {
             'level': 2,
-            'label': 'Animation Region',
+            'label': '动画区域',
             'options': ['all', 'eyes', 'lips'],
             'default': 'all',
             'parentToggle': 'FaceExpressionEnableToggle',
             'requiredToggleValue': True,
-            'help': 'The facial region involved in the restoration process.'
+            'help': '选择修复过程中涉及的面部区域。'
         },
         'FaceExpressionNormalizeLipsEnableToggle': {
             'level': 2,
-            'label': 'Normalize Lips',
+            'label': '标准化唇部',
             'default': True,
             'parentToggle': 'FaceExpressionEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Normalize the lips during the facial restoration process.'
+            'help': '在面部修复过程中标准化唇部。'
         },
         'FaceExpressionNormalizeLipsThresholdDecimalSlider': {
             'level': 3,
-            'label': 'Normalize Lips Threshold',
+            'label': '标准化唇部阈值',
             'min_value': '0.00',
             'max_value': '1.00',
             'default': '0.03',
@@ -184,19 +184,19 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'step': 0.01,
             'parentToggle': 'FaceExpressionNormalizeLipsEnableToggle & FaceExpressionEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Threshold value for Normalize Lips.'
+            'help': '标准化唇部的阈值。'
         },
         'FaceExpressionRetargetingEyesEnableToggle': {
             'level': 2,
-            'label': 'Retargeting Eyes',
+            'label': '重定向眼神',
             'default': False,
             'parentToggle': 'FaceExpressionEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Adjusting or redirecting the gaze or movement of the eyes during the facial restoration process. It overrides the Animation Region settings, meaning that the Animation Region will be ignored.'
+            'help': '在面部修复过程中调整或重定向眼神或眼部运动。它会覆盖动画区域设置，即动画区域将被忽略。'
         },
         'FaceExpressionRetargetingEyesMultiplierDecimalSlider': {
             'level': 3,
-            'label': 'Retargeting Eyes Multiplier',
+            'label': '眼神重定向倍数',
             'min_value': '0.00',
             'max_value': '2.00',
             'default': '1.00',
@@ -204,19 +204,19 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'step': 0.01,
             'parentToggle': 'FaceExpressionRetargetingEyesEnableToggle & FaceExpressionEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Multiplier value for Retargeting Eyes.'
+            'help': '眼神重定向的倍数值。'
         },
         'FaceExpressionRetargetingLipsEnableToggle': {
             'level': 2,
-            'label': 'Retargeting Lips',
+            'label': '重定向唇部',
             'default': False,
             'parentToggle': 'FaceExpressionEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Adjusting or modifying the position, shape, or movement of the lips during the facial restoration process. It overrides the Animation Region settings, meaning that the Animation Region will be ignored.'
+            'help': '在面部修复过程中调整或修改唇部的位置、形状或运动。它会覆盖动画区域设置，即动画区域将被忽略。'
         },
         'FaceExpressionRetargetingLipsMultiplierDecimalSlider': {
             'level': 3,
-            'label': 'Retargeting Lips Multiplier',
+            'label': '唇部重定向倍数',
             'min_value': '0.00',
             'max_value': '2.00',
             'default': '1.00',
@@ -224,7 +224,7 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'step': 0.01,
             'parentToggle': 'FaceExpressionRetargetingLipsEnableToggle & FaceExpressionEnableToggle',
             'requiredToggleValue': True,
-            'help': 'Multiplier value for Retargeting Lips.'
+            'help': '唇部重定向的倍数值。'
         },
     },
 }

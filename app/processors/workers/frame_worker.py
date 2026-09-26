@@ -37,6 +37,13 @@ class FrameWorker(threading.Thread):
         self.compare_images = []
         self.is_view_face_compare: bool = False
         self.is_view_face_mask: bool = False
+        # Monotonic sequence number, assigned by VideoProcessor when the worker is
+        # started. It keeps the temporal state ordered even though several frames
+        # are processed in parallel (and the webcam never advances frame_number).
+        self.temporal_sequence: int|None = None
+        # For every detected face: the ordered list of (target_face_id, similarity)
+        # that this frame should apply.
+        self.target_matches: list = []
 
     def run(self):
         try:
@@ -152,35 +159,40 @@ class FrameWorker(threading.Thread):
                 det_faces_data.append({'kps_5': face_kps_5, 'kps_all': face_kps_all, 'embedding': face_emb, 'bbox': bboxes[i]})
 
         compare_mode = self.is_view_face_mask or self.is_view_face_compare
-        
+
+        # Decide which target face (if any) belongs to every detected face. With
+        # temporal stabilisation enabled this also smooths the keypoints in place.
+        self.resolve_target_matches(det_faces_data, control)
+
         if det_faces_data:
-            # Loop through target faces to see if they match our found face embeddings
+            # Loop through the target faces that were matched to the detected faces
             for i, fface in enumerate(det_faces_data):
-                    for _, target_face in self.main_window.target_faces.items():
-                        parameters = ParametersDict(self.parameters[target_face.face_id], self.main_window.default_parameters) #Use the parameters of the target face
+                for target_face_id, _sim in self.target_matches[i]:
+                    target_face = self.main_window.target_faces.get(target_face_id)
+                    if target_face is None:
+                        continue
+                    parameters = ParametersDict(self.parameters[target_face.face_id], self.main_window.default_parameters) #Use the parameters of the target face
 
-                        if self.main_window.swapfacesButton.isChecked() or self.main_window.editFacesButton.isChecked():
-                            sim = self.models_processor.findCosineDistance(fface['embedding'], target_face.get_embedding(control['RecognitionModelSelection'])) # Recognition for comparing
-                            if sim>=parameters['SimilarityThresholdSlider']:
+                    if self.main_window.swapfacesButton.isChecked() or self.main_window.editFacesButton.isChecked():
+                        s_e = None
+                        fface['kps_5'] = self.keypoints_adjustments(fface['kps_5'], parameters) #Make keypoints adjustments
+                        arcface_model = self.models_processor.get_arcface_model(parameters['SwapModelSelection'])
+                        dfm_model=parameters['DFMModelSelection']
+                        if self.main_window.swapfacesButton.isChecked():
+                            if parameters['SwapModelSelection'] != 'DeepFaceLive (DFM)':
+                                s_e = target_face.assigned_input_embedding.get(arcface_model, None)
+                            if s_e is not None and np.isnan(s_e).any():
                                 s_e = None
-                                fface['kps_5'] = self.keypoints_adjustments(fface['kps_5'], parameters) #Make keypoints adjustments
-                                arcface_model = self.models_processor.get_arcface_model(parameters['SwapModelSelection'])
-                                dfm_model=parameters['DFMModelSelection']
-                                if self.main_window.swapfacesButton.isChecked():
-                                    if parameters['SwapModelSelection'] != 'DeepFaceLive (DFM)':
-                                        s_e = target_face.assigned_input_embedding.get(arcface_model, None)
-                                    if s_e is not None and np.isnan(s_e).any():
-                                        s_e = None
-                                else:
-                                    dfm_model = None
-                                    s_e = None
+                        else:
+                            dfm_model = None
+                            s_e = None
 
-                                # swap_core function is executed even if 'Swap Faces' button is disabled,
-                                # because it also returns the original face and face mask 
-                                img, fface['original_face'], fface['swap_mask'] = self.swap_core(img, fface['kps_5'], s_e=s_e, t_e=target_face.get_embedding(arcface_model), parameters=parameters, control=control, dfm_model=dfm_model)
-                                        # cv2.imwrite('temp_swap_face.png', swapped_face.permute(1,2,0).cpu().numpy())
-                                if self.main_window.editFacesButton.isChecked():
-                                    img = self.swap_edit_face_core(img, fface['kps_all'], parameters, control)
+                        # swap_core function is executed even if 'Swap Faces' button is disabled,
+                        # because it also returns the original face and face mask 
+                        img, fface['original_face'], fface['swap_mask'] = self.swap_core(img, fface['kps_5'], s_e=s_e, t_e=target_face.get_embedding(arcface_model), parameters=parameters, control=control, dfm_model=dfm_model)
+                                # cv2.imwrite('temp_swap_face.png', swapped_face.permute(1,2,0).cpu().numpy())
+                        if self.main_window.editFacesButton.isChecked():
+                            img = self.swap_edit_face_core(img, fface['kps_all'], parameters, control)
 
         if control['ManualRotationEnableToggle']:
             img = v2.functional.rotate(img, angle=-control['ManualRotationAngleSlider'], interpolation=v2.InterpolationMode.BILINEAR, expand=True)
@@ -203,7 +215,90 @@ class FrameWorker(threading.Thread):
         img = img.cpu().numpy()
         # RGB to BGR
         return img[..., ::-1]
-    
+
+    def get_parameter(self, face_id, key: str, default):
+        """Read a per target face parameter, falling back to the default value."""
+        parameters = self.parameters.get(face_id)
+        if parameters is None:
+            parameters = self.main_window.default_parameters
+        try:
+            value = parameters[key]
+        except (KeyError, TypeError):
+            value = self.main_window.default_parameters.get(key, default)
+        return default if value is None else value
+
+    def resolve_target_matches(self, det_faces_data: list, control: dict):
+        """Fill self.target_matches with, for every detected face, the ordered list of
+        (target_face_id, similarity) pairs that this frame should apply.
+
+        When temporal stabilisation is enabled the similarity is smoothed across
+        frames, a locked face only has to reach the lower hold threshold and the
+        detected keypoints are replaced by their 1 Euro filtered version.
+        """
+        targets_by_id = {target_face.face_id: target_face for target_face in self.main_window.target_faces.values()}
+        recognition_model = control['RecognitionModelSelection']
+
+        sims_per_detection = []
+        for fface in det_faces_data:
+            sims = {}
+            for face_id, target_face in targets_by_id.items():
+                sims[face_id] = float(self.models_processor.findCosineDistance(
+                    fface['embedding'], target_face.get_embedding(recognition_model)))
+            sims_per_detection.append(sims)
+
+        thresholds = {face_id: float(self.get_parameter(face_id, 'SimilarityThresholdSlider', 60.0))
+                      for face_id in targets_by_id}
+
+        temporal_state = getattr(self.video_processor, 'temporal_state', None)
+        if not control.get('TemporalStabilizationToggle', False) or self.is_single_frame or temporal_state is None:
+            # Stateless behaviour, identical to the original pipeline.
+            self.target_matches = [
+                [(face_id, sims[face_id]) for face_id in targets_by_id
+                 if sims.get(face_id, -1.0) >= thresholds.get(face_id, 60.0)]
+                for sims in sims_per_detection
+            ]
+            return
+
+        hysteresis = {face_id: float(self.get_parameter(face_id, 'SimilarityHysteresisSlider', 8.0))
+                      for face_id in targets_by_id}
+        smoothing = {face_id: float(self.get_parameter(face_id, 'SimilaritySmoothingSlider', 50.0)) / 100.0
+                     for face_id in targets_by_id}
+
+        freq = 0.0
+        if control.get('VideoPlaybackCustomFpsToggle', False):
+            freq = float(control.get('VideoPlaybackCustomFpsSlider', 0) or 0)
+        if freq <= 0.0:
+            freq = float(getattr(self.video_processor, 'fps', 0) or 0)
+        if freq <= 0.0:
+            freq = 30.0
+
+        detections = [
+            {'bbox': fface.get('bbox'), 'kps_5': fface.get('kps_5'), 'kps_all': fface.get('kps_all'), 'sims': sims}
+            for fface, sims in zip(det_faces_data, sims_per_detection)
+        ]
+
+        sequence = self.temporal_sequence if self.temporal_sequence is not None else self.frame_number
+        decisions = temporal_state.commit(
+            sequence=sequence,
+            detections=detections,
+            thresholds=thresholds,
+            hysteresis=hysteresis,
+            smoothing=smoothing,
+            freq=freq,
+            max_missed=int(control.get('MaxMissedFramesSlider', 2)),
+            keypoint_smoothing=bool(control.get('KeypointSmoothingToggle', True)),
+            min_cutoff=float(control.get('KeypointSmoothingMinCutoffDecimalSlider', 1.0)),
+            beta=float(control.get('KeypointSmoothingBetaDecimalSlider', 0.01)),
+        )
+
+        self.target_matches = []
+        for fface, decision in zip(det_faces_data, decisions):
+            if decision.get('kps_5') is not None:
+                fface['kps_5'] = decision['kps_5']
+            if decision.get('kps_all') is not None:
+                fface['kps_all'] = decision['kps_all']
+            self.target_matches.append(list(decision.get('matches') or []))
+
     def keypoints_adjustments(self, kps_5: np.ndarray, parameters: dict) -> np.ndarray:
         # Change the ref points
         if parameters['FaceAdjEnableToggle']:
@@ -237,28 +332,30 @@ class FrameWorker(threading.Thread):
         #     p = 2
         p = 2 #Point thickness
         for i, fface in enumerate(det_faces_data):
-            for _, target_face in self.main_window.target_faces.items():
+            matches = self.target_matches[i] if i < len(self.target_matches) else []
+            for target_face_id, _sim in matches:
+                target_face = self.main_window.target_faces.get(target_face_id)
+                if target_face is None:
+                    continue
                 parameters = self.parameters[target_face.face_id] #Use the parameters of the target face
-                sim = self.models_processor.findCosineDistance(fface['embedding'], target_face.get_embedding(control['RecognitionModelSelection']))
-                if sim>=parameters['SimilarityThresholdSlider']:
-                    if parameters['LandmarksPositionAdjEnableToggle']:
-                        kcolor = tuple((255, 0, 0))
-                        keypoints = fface['kps_5']
-                    else:
-                        kcolor = tuple((0, 255, 255))
-                        keypoints = fface['kps_all']
+                if parameters['LandmarksPositionAdjEnableToggle']:
+                    kcolor = tuple((255, 0, 0))
+                    keypoints = fface['kps_5']
+                else:
+                    kcolor = tuple((0, 255, 255))
+                    keypoints = fface['kps_all']
 
-                    for kpoint in keypoints:
-                        for i in range(-1, p):
-                            for j in range(-1, p):
-                                try:
-                                    img[int(kpoint[1])+i][int(kpoint[0])+j][0] = kcolor[0]
-                                    img[int(kpoint[1])+i][int(kpoint[0])+j][1] = kcolor[1]
-                                    img[int(kpoint[1])+i][int(kpoint[0])+j][2] = kcolor[2]
+                for kpoint in keypoints:
+                    for k in range(-1, p):
+                        for j in range(-1, p):
+                            try:
+                                img[int(kpoint[1])+k][int(kpoint[0])+j][0] = kcolor[0]
+                                img[int(kpoint[1])+k][int(kpoint[0])+j][1] = kcolor[1]
+                                img[int(kpoint[1])+k][int(kpoint[0])+j][2] = kcolor[2]
 
-                                except ValueError:
-                                    #print("Key-points value {} exceed the image size {}.".format(kpoint, (img_x, img_y)))
-                                    continue
+                            except ValueError:
+                                #print("Key-points value {} exceed the image size {}.".format(kpoint, (img_x, img_y)))
+                                continue
         return img
     
     def draw_bounding_boxes_on_detected_faces(self, img: torch.Tensor, det_faces_data: list, control: dict):
@@ -287,44 +384,43 @@ class FrameWorker(threading.Thread):
 
     def get_compare_faces_image(self, img: torch.Tensor, det_faces_data: dict, control: dict) -> torch.Tensor:
         imgs_to_vstack = []  # Renamed for vertical stacking
-        for _, fface in enumerate(det_faces_data):
-            for _, target_face in self.main_window.target_faces.items():
+        for i, fface in enumerate(det_faces_data):
+            matches = self.target_matches[i] if i < len(self.target_matches) else []
+            for target_face_id, _sim in matches:
+                target_face = self.main_window.target_faces.get(target_face_id)
+                if target_face is None:
+                    continue
                 parameters = self.parameters[target_face.face_id]  # Use the parameters of the target face
-                sim = self.models_processor.findCosineDistance(
-                    fface['embedding'], 
-                    target_face.get_embedding(control['RecognitionModelSelection'])
-                )
-                if sim >= parameters['SimilarityThresholdSlider']:
-                    modified_face = self.get_cropped_face_using_kps(img, fface['kps_5'], parameters)
-                    # Apply frame enhancer
-                    if control['FrameEnhancerEnableToggle']:
-                        # Enhance the face and resize it to the original size for stacking
-                        modified_face_enhance = self.enhance_core(modified_face, control=control)
-                        modified_face_enhance = modified_face_enhance.float() / 255.0
-                        # Resize source_tensor to match the size of target_tensor
-                        modified_face = torch.functional.F.interpolate(
-                            modified_face_enhance.unsqueeze(0),  # Add batch dimension
-                            size=modified_face.shape[1:],  # Target size: [H, W]
-                            mode='bilinear',  # Interpolation mode
-                            align_corners=False  # Avoid alignment artifacts
-                        ).squeeze(0)  # Remove batch dimension
-                        
-                        modified_face = (modified_face * 255).clamp(0, 255).to(dtype=torch.uint8)
-                    imgs_to_cat = []
-                    
-                    # Append tensors to imgs_to_cat
-                    if fface['original_face'] is not None:
-                        imgs_to_cat.append(fface['original_face'].permute(2, 0, 1))
-                    imgs_to_cat.append(modified_face)
-                    if fface['swap_mask'] is not None:
-                        fface['swap_mask'] = 255-fface['swap_mask']
-                        imgs_to_cat.append(fface['swap_mask'].permute(2, 0, 1))
-  
-                    # Concatenate horizontally for comparison
-                    img_compare = torch.cat(imgs_to_cat, dim=2)
+                modified_face = self.get_cropped_face_using_kps(img, fface['kps_5'], parameters)
+                # Apply frame enhancer
+                if control['FrameEnhancerEnableToggle']:
+                    # Enhance the face and resize it to the original size for stacking
+                    modified_face_enhance = self.enhance_core(modified_face, control=control)
+                    modified_face_enhance = modified_face_enhance.float() / 255.0
+                    # Resize source_tensor to match the size of target_tensor
+                    modified_face = torch.functional.F.interpolate(
+                        modified_face_enhance.unsqueeze(0),  # Add batch dimension
+                        size=modified_face.shape[1:],  # Target size: [H, W]
+                        mode='bilinear',  # Interpolation mode
+                        align_corners=False  # Avoid alignment artifacts
+                    ).squeeze(0)  # Remove batch dimension
 
-                    # Add horizontally concatenated image to vertical stack list
-                    imgs_to_vstack.append(img_compare)
+                    modified_face = (modified_face * 255).clamp(0, 255).to(dtype=torch.uint8)
+                imgs_to_cat = []
+
+                # Append tensors to imgs_to_cat
+                if fface['original_face'] is not None:
+                    imgs_to_cat.append(fface['original_face'].permute(2, 0, 1))
+                imgs_to_cat.append(modified_face)
+                if fface['swap_mask'] is not None:
+                    fface['swap_mask'] = 255-fface['swap_mask']
+                    imgs_to_cat.append(fface['swap_mask'].permute(2, 0, 1))
+
+                # Concatenate horizontally for comparison
+                img_compare = torch.cat(imgs_to_cat, dim=2)
+
+                # Add horizontally concatenated image to vertical stack list
+                imgs_to_vstack.append(img_compare)
     
         if imgs_to_vstack:
             # Find the maximum width
