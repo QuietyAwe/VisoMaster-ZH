@@ -509,19 +509,27 @@ class FrameWorker(threading.Thread):
         _rec('load_to_vram', time.perf_counter() - _t0)
 
         det_faces_data_for_display = [] # For overlays in standard mode
+        # 叠加显示（边界框/关键点/对比视图）的数据只在开关开启时构建，
+        # VR 路径下它纯属显示用途，关着时逐帧填充就是白做。
+        show_overlays = (
+            control.get('ShowAllDetectedFacesBBoxToggle', False) or
+            control.get('ShowLandmarksEnableToggle', False) or
+            self.is_view_face_compare or self.is_view_face_mask
+        )
 
         if control.get('VR180ModeEnableToggle', False):
             # === VR180 Path ===
-            original_equirect_tensor_for_vr = processed_tensor_rgb_uint8.clone() # Keep a pristine copy for VR background
-            # img_numpy_rgb_uint8 is HxWxC RGB uint8
+            # 帧张量已在 GPU（CHW RGB uint8）：投影/检测直接复用，不从 numpy 重建
+            # （8K 全景每帧冗余 H2D 实测数毫秒），也无需克隆底图——检测/采样只读、
+            # 缝合原地写回，本帧消费链内无其他读者。
             equirect_converter = EquirectangularConverter(
-                img_numpy_rgb_uint8, device=self.models_processor.device
+                processed_tensor_rgb_uint8, device=self.models_processor.device
             )
 
             # Detect faces on the full equirectangular image to guide perspective cropping
             # run_detect expects CxHxW tensor
             bboxes_eq_np, kpss_5_eq_np, kpss_all_eq_np = self.models_processor.run_detect(
-                original_equirect_tensor_for_vr, # Detect on the pristine original
+                processed_tensor_rgb_uint8, # Detect on the pristine original
                 control['DetectorModelSelection'],
                 max_num=control['MaxFacesToDetectSlider'],
                 score=control['DetectorScoreSlider']/100.0,
@@ -544,13 +552,14 @@ class FrameWorker(threading.Thread):
             for i, bbox_eq_single in enumerate(bboxes_eq_np):
                 kps_5_eq_single = kpss_5_eq_np[i]
                 kps_all_eq_single = kpss_all_eq_np[i] if isinstance(kpss_all_eq_np, np.ndarray) and kpss_all_eq_np.ndim > 1 and i < kpss_all_eq_np.shape[0] else kps_5_eq_single
-                det_faces_data_for_display.append({
-                    'kps_5': kps_5_eq_single,
-                    'kps_all': kps_all_eq_single,
-                    'embedding': None,
-                    'bbox': bbox_eq_single,
-                })
-                self.target_matches.append([])
+                if show_overlays:
+                    det_faces_data_for_display.append({
+                        'kps_5': kps_5_eq_single,
+                        'kps_all': kps_all_eq_single,
+                        'embedding': None,
+                        'bbox': bbox_eq_single,
+                    })
+                    self.target_matches.append([])
 
                 theta, phi = equirect_converter.calculate_theta_phi_from_bbox(bbox_eq_single)
                 original_eye_side = "L" if (bbox_eq_single[0] + bbox_eq_single[2]) / 2 < equirect_converter.width / 2 else "R"
@@ -593,8 +602,9 @@ class FrameWorker(threading.Thread):
                 )
 
                 # 更新显示叠加数据的匹配信息（与 det_faces_data_for_display 末项对应）
-                det_faces_data_for_display[-1]['embedding'] = face_emb_crop
-                self.target_matches[-1] = [(best_target_button_vr.face_id, best_sim_vr)] if best_target_button_vr else []
+                if show_overlays and det_faces_data_for_display:
+                    det_faces_data_for_display[-1]['embedding'] = face_emb_crop
+                    self.target_matches[-1] = [(best_target_button_vr.face_id, best_sim_vr)] if best_target_button_vr else []
 
                 if best_target_button_vr:
                     analyzed_faces_for_vr.append({
@@ -645,13 +655,11 @@ class FrameWorker(threading.Thread):
 
                 del item_data['face_crop_tensor'] # Moved inside the loop to clean up for current item
             
-            # Stitch processed crops back
-            # Start with the original equirect image as a Torch tensor
-            # equirect_converter.equirect_tensor_cxhxw_rgb_uint8 is already CHW RGB uint8 on device
-            final_equirect_torch_cxhxw_rgb_uint8 = original_equirect_tensor_for_vr.clone() # Use the pristine clone
-            
+            # Stitch processed crops back（原地缝合写回，免去 8K 克隆，省约 95MB 显存拷贝/帧）
+            final_equirect_torch_cxhxw_rgb_uint8 = processed_tensor_rgb_uint8
+
             p2e_converter = PerspectiveConverter(
-                img_numpy_rgb_uint8, device=self.models_processor.device
+                processed_tensor_rgb_uint8, device=self.models_processor.device
             )
 
             for eye_side, data in processed_perspective_crops_details.items():

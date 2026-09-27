@@ -24,11 +24,15 @@ class EquirectangularConverter:
         """
 
         self.device = device
-        # Convert NumPy HWC RGB to Torch CHW RGB tensor on GPU
-        # ascontiguousarray 防御负步长视图（如 frame[..., ::-1]），torch.from_numpy 不支持
-        self.equirect_tensor_cxhxw_rgb_uint8 = torch.from_numpy(
-            np.ascontiguousarray(equirect_image_data_rgb_uint8)
-        ).permute(2,0,1).to(self.device)
+        # 支持 numpy(HWC RGB uint8) 与 torch(CHW RGB uint8) 两种输入；已是张量时直接复用，
+        # 避免每帧对 8K 全景做冗余 H2D 传输（实测每帧数毫秒）。
+        # numpy 路径的 ascontiguousarray 防御负步长视图（如 frame[..., ::-1]）。
+        if isinstance(equirect_image_data_rgb_uint8, torch.Tensor):
+            self.equirect_tensor_cxhxw_rgb_uint8 = equirect_image_data_rgb_uint8.to(self.device)
+        else:
+            self.equirect_tensor_cxhxw_rgb_uint8 = torch.from_numpy(
+                np.ascontiguousarray(equirect_image_data_rgb_uint8)
+            ).permute(2,0,1).to(self.device)
         
         self.channels, self.height, self.width = self.equirect_tensor_cxhxw_rgb_uint8.shape
         self.e2p_instance = E2P_Equirectangular(self.equirect_tensor_cxhxw_rgb_uint8)
@@ -106,11 +110,14 @@ class PerspectiveConverter:
         """
 
         self.device = device
-        # Convert NumPy HWC RGB to Torch CHW RGB tensor on GPU
-        # ascontiguousarray 防御负步长视图（如 frame[..., ::-1]），torch.from_numpy 不支持
-        self.base_equirect_tensor_cxhxw_rgb_uint8 = torch.from_numpy(
-            np.ascontiguousarray(base_equirect_image_data_rgb_uint8)
-        ).permute(2,0,1).to(self.device)
+        # 支持 numpy(HWC RGB uint8) 与 torch(CHW RGB uint8) 两种输入；已是张量时直接复用，
+        # 避免每帧对 8K 全景做冗余 H2D 传输。numpy 路径防御负步长视图。
+        if isinstance(base_equirect_image_data_rgb_uint8, torch.Tensor):
+            self.base_equirect_tensor_cxhxw_rgb_uint8 = base_equirect_image_data_rgb_uint8.to(self.device)
+        else:
+            self.base_equirect_tensor_cxhxw_rgb_uint8 = torch.from_numpy(
+                np.ascontiguousarray(base_equirect_image_data_rgb_uint8)
+            ).permute(2,0,1).to(self.device)
         self.orig_channels, self.orig_height, self.orig_width = self.base_equirect_tensor_cxhxw_rgb_uint8.shape
         self.sobel_x_kernel, self.sobel_y_kernel = _get_sobel_kernels(self.device)
 
