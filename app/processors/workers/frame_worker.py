@@ -330,7 +330,7 @@ class FrameWorker(threading.Thread):
             current_params_pd = ParametersDict(dict(face_specific_params_dict), default_params_dict)
 
             target_embedding_np = target_button_widget.get_embedding(control_global['RecognitionModelSelection'])
-            if target_embedding_np is None: continue
+            if target_embedding_np is None or getattr(target_embedding_np, 'size', 0) == 0: continue
 
             sim = self.models_processor.findCosineDistance(detected_embedding_np, target_embedding_np)
             
@@ -481,7 +481,7 @@ class FrameWorker(threading.Thread):
 
             # Detect faces on the full equirectangular image to guide perspective cropping
             # run_detect expects CxHxW tensor
-            bboxes_eq_np, kpss_5_eq_np, _ = self.models_processor.run_detect(
+            bboxes_eq_np, kpss_5_eq_np, kpss_all_eq_np = self.models_processor.run_detect(
                 original_equirect_tensor_for_vr, # Detect on the pristine original
                 control['DetectorModelSelection'],
                 max_num=control['MaxFacesToDetectSlider'],
@@ -498,10 +498,21 @@ class FrameWorker(threading.Thread):
             processed_perspective_crops_details = {}
 
             analyzed_faces_for_vr = []
+            # VR 路径自行维护与 det_faces_data_for_display 平行的匹配结果，
+            # 供边界框/关键点/对比视图等公共叠加显示使用（坐标在全景空间）。
+            self.target_matches = []
 
             for i, bbox_eq_single in enumerate(bboxes_eq_np):
                 kps_5_eq_single = kpss_5_eq_np[i]
-                
+                kps_all_eq_single = kpss_all_eq_np[i] if isinstance(kpss_all_eq_np, np.ndarray) and kpss_all_eq_np.ndim > 1 and i < kpss_all_eq_np.shape[0] else kps_5_eq_single
+                det_faces_data_for_display.append({
+                    'kps_5': kps_5_eq_single,
+                    'kps_all': kps_all_eq_single,
+                    'embedding': None,
+                    'bbox': bbox_eq_single,
+                })
+                self.target_matches.append([])
+
                 theta, phi = equirect_converter.calculate_theta_phi_from_bbox(bbox_eq_single)
                 original_eye_side = "L" if (bbox_eq_single[0] + bbox_eq_single[2]) / 2 < equirect_converter.width / 2 else "R"
 
@@ -519,7 +530,9 @@ class FrameWorker(threading.Thread):
                     FOV=dynamic_fov_for_crop, THETA=theta, PHI=phi,
                     height=crop_render_height, width=crop_render_width
                 )
-                if face_crop_tensor is None or face_crop_tensor.numel() == 0: continue
+                if face_crop_tensor is None or face_crop_tensor.numel() == 0:
+                    print(f"VR180: 投影 crop 为空，跳过该人脸（eye={original_eye_side}, theta={theta:.1f}, phi={phi:.1f}）")
+                    continue
 
                 _, kps_on_crop_list, _ = self.models_processor.run_detect(
                     face_crop_tensor, control['DetectorModelSelection'], max_num=1,
@@ -542,6 +555,7 @@ class FrameWorker(threading.Thread):
                 # If it's a non-empty list, no_valid_kps remains False.
 
                 if no_valid_kps:
+                    print(f"VR180: 投影 crop 内未检出关键点，跳过该人脸（eye={original_eye_side}, theta={theta:.1f}, phi={phi:.1f}）")
                     del face_crop_tensor
                     continue
                 kps_on_crop = kps_on_crop_list[0]
@@ -551,10 +565,14 @@ class FrameWorker(threading.Thread):
                     control['SimilarityTypeSelection'], control['RecognitionModelSelection']
                 )
                 
-                best_target_button_vr, best_params_for_target_vr, _ = self._find_best_target_match(
+                best_target_button_vr, best_params_for_target_vr, best_sim_vr = self._find_best_target_match(
                     face_emb_crop, control
                 )
-                
+
+                # 更新显示叠加数据的匹配信息（与 det_faces_data_for_display 末项对应）
+                det_faces_data_for_display[-1]['embedding'] = face_emb_crop
+                self.target_matches[-1] = [(best_target_button_vr.face_id, best_sim_vr)] if best_target_button_vr else []
+
                 if best_target_button_vr:
                     analyzed_faces_for_vr.append({
                         'theta': theta, 'phi': phi, 
@@ -568,6 +586,7 @@ class FrameWorker(threading.Thread):
                         # 'crop_render_w': crop_render_width
                     })
                 else: # No matching target face in UI
+                    print(f"VR180: 未匹配到目标人脸（eye={original_eye_side}, 该脸与目标卡的最高相似度={best_sim_vr:.1f}，未达阈值）")
                     del face_crop_tensor
 
 
