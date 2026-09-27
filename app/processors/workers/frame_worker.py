@@ -219,13 +219,6 @@ class FrameWorker(threading.Thread):
         # but still allow mask/original face generation if swap_core is structured that way.
         s_e_for_swap_core = s_e_for_swap_np if swap_button_is_checked_global else None
 
-        # 诊断：换脸已开启但目标卡没有有效源脸时，此路径此前完全静默，
-        # 表现为"匹配上了却不替换"，用户无从判断原因。
-        if swap_button_is_checked_global and s_e_for_swap_core is None and \
-           not (parameters_for_face['SwapModelSelection'] == 'DeepFaceLive (DFM)' and dfm_model_instance_local is not None) and \
-           not edit_button_is_checked_global:
-            print(f"VR180: 目标卡未分配有效的输入脸，跳过换脸（eye={eye_side_for_debug}）。请把输入脸拖到该目标卡上。")
-
         # Call swap_core if:
         # 1. Swapping is enabled and s_e_for_swap_core is valid (or DFM is configured).
         # 2. Editing is enabled (swap_core might be needed for mask/original_face even if not swapping).
@@ -325,19 +318,12 @@ class FrameWorker(threading.Thread):
         
         return processed_crop_torch_rgb_uint8
 
-    def _find_best_target_match(self, detected_embedding_np, control_global, require_input_embedding: bool = False):
+    def _find_best_target_match(self, detected_embedding_np, control_global):
         best_target_button = None
         best_params_pd = None
         highest_sim = -1.0 # Initialize to a value lower than any possible similarity
 
         for target_id, target_button_widget in list(self.main_window.target_faces.items()):
-            # 换脸模式下跳过未分配输入脸的目标卡：这类卡换不了脸，若被匹配命中
-            # 会表现为"明明匹配上了却不替换"，还会抢占本可换脸的相似卡（双目素材
-            # 下左右眼视图常被建成两张卡，只有一张拖了输入脸时另一侧就永远不换）。
-            if require_input_embedding:
-                emb_map = getattr(target_button_widget, 'assigned_input_embedding', None) or {}
-                if not any(v is not None and getattr(v, 'size', 0) > 0 for v in emb_map.values()):
-                    continue
             face_specific_params_dict = self.parameters.get(target_id, {})
             default_params_dict = dict(self.main_window.default_parameters) if isinstance(self.main_window.default_parameters, ParametersDict) else self.main_window.default_parameters
             
@@ -487,126 +473,135 @@ class FrameWorker(threading.Thread):
 
         if control.get('VR180ModeEnableToggle', False):
             # === VR180 Path ===
+            # SBS VR180 素材 = 左右两半幅各是一张独立 equirectangular（左眼/右眼），
+            # 投影几何必须按半幅独立处理：若把整图当一张全景，半幅内容被水平压缩，
+            # 眼图中央的人脸变成窄长脸导致 crop 内关键点检测失败，
+            # 仅边缘脸因全景自身的边缘拉伸抵消压缩而可用。
             original_equirect_tensor_for_vr = processed_tensor_rgb_uint8.clone() # Keep a pristine copy for VR background
             # img_numpy_rgb_uint8 is HxWxC RGB uint8
-            equirect_converter = EquirectangularConverter(
-                img_numpy_rgb_uint8, device=self.models_processor.device
-            )
-
-            # Detect faces on the full equirectangular image to guide perspective cropping
-            # run_detect expects CxHxW tensor
-            bboxes_eq_np, kpss_5_eq_np, kpss_all_eq_np = self.models_processor.run_detect(
-                original_equirect_tensor_for_vr, # Detect on the pristine original
-                control['DetectorModelSelection'],
-                max_num=control['MaxFacesToDetectSlider'],
-                score=control['DetectorScoreSlider']/100.0,
-                #input_size=(img_numpy_rgb_uint8.shape[0], img_numpy_rgb_uint8.shape[1]), # H, W
-                input_size=(512, 512), # Use a fixed H, W hint, e.g., (512,512) or (640,640)
-                use_landmark_detection=control['LandmarkDetectToggle'],
-                landmark_detect_mode=control['LandmarkDetectModelSelection'],
-                landmark_score=control["LandmarkDetectScoreSlider"]/100.0,
-                from_points=control["DetectFromPointsToggle"],
-                rotation_angles=[0] if not control["AutoRotationToggle"] else [0, 90, 180, 270]
-            )
+            half_width = img_numpy_rgb_uint8.shape[1] // 2
 
             processed_perspective_crops_details = {}
 
             analyzed_faces_for_vr = []
             # VR 路径自行维护与 det_faces_data_for_display 平行的匹配结果，
-            # 供边界框/关键点/对比视图等公共叠加显示使用（坐标在全景空间）。
+            # 供边界框/关键点/对比视图等公共叠加显示使用（显示数据记录在整幅全景坐标）。
             self.target_matches = []
 
-            for i, bbox_eq_single in enumerate(bboxes_eq_np):
-                kps_5_eq_single = kpss_5_eq_np[i]
-                kps_all_eq_single = kpss_all_eq_np[i] if isinstance(kpss_all_eq_np, np.ndarray) and kpss_all_eq_np.ndim > 1 and i < kpss_all_eq_np.shape[0] else kps_5_eq_single
-                det_faces_data_for_display.append({
-                    'kps_5': kps_5_eq_single,
-                    'kps_all': kps_all_eq_single,
-                    'embedding': None,
-                    'bbox': bbox_eq_single,
-                })
-                self.target_matches.append([])
+            for eye_side_loop, x_offset in (("L", 0), ("R", half_width)):
+                # 每眼半幅独立构建投影几何（半幅自身是完整 360°x180° 等距柱状投影）
+                half_img_np = np.ascontiguousarray(img_numpy_rgb_uint8[:, x_offset:x_offset + half_width, :])
+                half_tensor = original_equirect_tensor_for_vr[:, :, x_offset:x_offset + half_width]
+                equirect_converter = EquirectangularConverter(half_img_np, device=self.models_processor.device)
 
-                theta, phi = equirect_converter.calculate_theta_phi_from_bbox(bbox_eq_single)
-                original_eye_side = "L" if (bbox_eq_single[0] + bbox_eq_single[2]) / 2 < equirect_converter.width / 2 else "R"
-
-                # Calculate dynamic FOV for the perspective crop
-                angular_width_deg = (bbox_eq_single[2] - bbox_eq_single[0]) / equirect_converter.width * 360.0
-                angular_height_deg = (bbox_eq_single[3] - bbox_eq_single[1]) / equirect_converter.height * 180.0
-                dynamic_fov_for_crop = max(angular_width_deg, angular_height_deg) * self.VR_DYNAMIC_FOV_PADDING_FACTOR
-                # Clip FOV to a reasonable range
-                dynamic_fov_for_crop = np.clip(dynamic_fov_for_crop, 15.0, 100.0) # Min 15 deg, Max 100 deg FOV
-
-                crop_render_height = self.VR_PERSPECTIVE_RENDER_SIZE
-                crop_render_width = self.VR_PERSPECTIVE_RENDER_SIZE
-
-                face_crop_tensor = equirect_converter.get_perspective_crop(
-                    FOV=dynamic_fov_for_crop, THETA=theta, PHI=phi,
-                    height=crop_render_height, width=crop_render_width,
-                    eye_side=original_eye_side  # 钳制采样到本眼半幅，防跨眼混合
-                )
-                if face_crop_tensor is None or face_crop_tensor.numel() == 0:
-                    print(f"VR180: 投影 crop 为空，跳过该人脸（eye={original_eye_side}, theta={theta:.1f}, phi={phi:.1f}）")
-                    continue
-
-                _, kps_on_crop_list, _ = self.models_processor.run_detect(
-                    face_crop_tensor, control['DetectorModelSelection'], max_num=1,
+                # Detect faces on this eye's half panorama (run_detect expects CxHxW tensor)
+                bboxes_eq_np, kpss_5_eq_np, kpss_all_eq_np = self.models_processor.run_detect(
+                    half_tensor.contiguous(), # Detect on the pristine original half
+                    control['DetectorModelSelection'],
+                    max_num=control['MaxFacesToDetectSlider'],
                     score=control['DetectorScoreSlider']/100.0,
-                    input_size=(crop_render_height, crop_render_width), # Use actual render dimensions
+                    input_size=(512, 512), # Use a fixed H, W hint, e.g., (512,512) or (640,640)
                     use_landmark_detection=control['LandmarkDetectToggle'],
                     landmark_detect_mode=control['LandmarkDetectModelSelection'],
                     landmark_score=control["LandmarkDetectScoreSlider"]/100.0,
-                    from_points=control["DetectFromPointsToggle"], rotation_angles=[0] # No auto-rotation for perspective crops
+                    from_points=control["DetectFromPointsToggle"],
+                    rotation_angles=[0] if not control["AutoRotationToggle"] else [0, 90, 180, 270]
                 )
 
-                # Check if kps_on_crop_list indicates no usable keypoints
-                no_valid_kps = False
-                if isinstance(kps_on_crop_list, np.ndarray):
-                    if not kps_on_crop_list.any(): # Original logic for numpy arrays
-                        no_valid_kps = True
-                elif not kps_on_crop_list: # For lists (e.g., empty list)
-                    no_valid_kps = True
-                # If kps_on_crop_list is an unexpected type, it might fall through.
-                # If it's a non-empty list, no_valid_kps remains False.
-
-                if no_valid_kps:
-                    print(f"VR180: 投影 crop 内未检出关键点，跳过该人脸（eye={original_eye_side}, theta={theta:.1f}, phi={phi:.1f}）")
-                    del face_crop_tensor
-                    continue
-                kps_on_crop = kps_on_crop_list[0]
-
-                face_emb_crop, _ = self.models_processor.run_recognize_direct(
-                    face_crop_tensor, kps_on_crop,
-                    control['SimilarityTypeSelection'], control['RecognitionModelSelection']
-                )
-                
-                best_target_button_vr, best_params_for_target_vr, best_sim_vr = self._find_best_target_match(
-                    face_emb_crop, control,
-                    require_input_embedding=swap_button_is_checked_global  # 换脸时只认已分配输入脸的卡
-                )
-
-                # 更新显示叠加数据的匹配信息（与 det_faces_data_for_display 末项对应）
-                det_faces_data_for_display[-1]['embedding'] = face_emb_crop
-                self.target_matches[-1] = [(best_target_button_vr.face_id, best_sim_vr)] if best_target_button_vr else []
-
-                if best_target_button_vr:
-                    analyzed_faces_for_vr.append({
-                        'theta': theta, 'phi': phi, 
-                        'original_eye_side': original_eye_side,
-                        'face_crop_tensor': face_crop_tensor, 
-                        'kps_on_crop': kps_on_crop,
-                        'target_button': best_target_button_vr,
-                        'params': best_params_for_target_vr,
-                        'fov_used_for_crop': dynamic_fov_for_crop, # Store the dynamic FOV
-                        # 'crop_render_h': crop_render_height, # Not strictly needed for stitching if FOV is used
-                        # 'crop_render_w': crop_render_width
+                for i, bbox_eq_single in enumerate(bboxes_eq_np):
+                    kps_5_eq_single = kpss_5_eq_np[i]
+                    kps_all_eq_single = kpss_all_eq_np[i] if isinstance(kpss_all_eq_np, np.ndarray) and kpss_all_eq_np.ndim > 1 and i < kpss_all_eq_np.shape[0] else kps_5_eq_single
+                    # 显示叠加数据换算到整幅全景坐标（绘制目标是整幅图）
+                    det_faces_data_for_display.append({
+                        'kps_5': kps_5_eq_single + np.array([x_offset, 0]),
+                        'kps_all': kps_all_eq_single + np.array([x_offset, 0]),
+                        'embedding': None,
+                        'bbox': bbox_eq_single + np.array([x_offset, 0, x_offset, 0]),
                     })
-                else: # No matching target face in UI
-                    if best_sim_vr <= -1.0 and self.main_window.target_faces:
-                        print(f"VR180: 未匹配到可用目标卡（eye={original_eye_side}）：没有分配了输入脸的目标卡，请把输入脸拖到目标卡上。")
-                    else:
+                    self.target_matches.append([])
+
+                    theta, phi = equirect_converter.calculate_theta_phi_from_bbox(bbox_eq_single)
+                    original_eye_side = eye_side_loop
+
+                    # Calculate dynamic FOV for the perspective crop
+                    angular_width_deg = (bbox_eq_single[2] - bbox_eq_single[0]) / equirect_converter.width * 360.0
+                    angular_height_deg = (bbox_eq_single[3] - bbox_eq_single[1]) / equirect_converter.height * 180.0
+                    dynamic_fov_for_crop = max(angular_width_deg, angular_height_deg) * self.VR_DYNAMIC_FOV_PADDING_FACTOR
+                    # Clip FOV to a reasonable range
+                    dynamic_fov_for_crop = np.clip(dynamic_fov_for_crop, 15.0, 100.0) # Min 15 deg, Max 100 deg FOV
+
+                    crop_render_height = self.VR_PERSPECTIVE_RENDER_SIZE
+                    crop_render_width = self.VR_PERSPECTIVE_RENDER_SIZE
+
+                    face_crop_tensor = equirect_converter.get_perspective_crop(
+                        FOV=dynamic_fov_for_crop, THETA=theta, PHI=phi,
+                        height=crop_render_height, width=crop_render_width
+                    )
+                    if face_crop_tensor is None or face_crop_tensor.numel() == 0:
+                        print(f"VR180: 投影 crop 为空，跳过该人脸（eye={original_eye_side}, theta={theta:.1f}, phi={phi:.1f}）")
+                        continue
+
+                    _, kps_on_crop_list, _ = self.models_processor.run_detect(
+                        face_crop_tensor, control['DetectorModelSelection'], max_num=1,
+                        score=control['DetectorScoreSlider']/100.0,
+                        input_size=(crop_render_height, crop_render_width), # Use actual render dimensions
+                        use_landmark_detection=control['LandmarkDetectToggle'],
+                        landmark_detect_mode=control['LandmarkDetectModelSelection'],
+                        landmark_score=control["LandmarkDetectScoreSlider"]/100.0,
+                        from_points=control["DetectFromPointsToggle"], rotation_angles=[0] # No auto-rotation for perspective crops
+                    )
+
+                    # Check if kps_on_crop_list indicates no usable keypoints
+                    no_valid_kps = False
+                    if isinstance(kps_on_crop_list, np.ndarray):
+                        if not kps_on_crop_list.any(): # Original logic for numpy arrays
+                            no_valid_kps = True
+                    elif not kps_on_crop_list: # For lists (e.g., empty list)
+                        no_valid_kps = True
+                    # If kps_on_crop_list is an unexpected type, it might fall through.
+                    # If it's a non-empty list, no_valid_kps remains False.
+
+                    if no_valid_kps:
+                        # 诊断：把检测失败的 crop 存档，便于直接查看投影内容定位问题
+                        try:
+                            os.makedirs('debug_vr_crops', exist_ok=True)
+                            cv2.imwrite(
+                                os.path.join('debug_vr_crops', f'fail_eye{original_eye_side}_theta{theta:.0f}_phi{phi:.0f}_f{self.frame_number}.png'),
+                                cv2.cvtColor(face_crop_tensor.permute(1, 2, 0).cpu().numpy(), cv2.COLOR_RGB2BGR)
+                            )
+                        except Exception:
+                            pass
+                        print(f"VR180: 投影 crop 内未检出关键点，跳过该人脸（eye={original_eye_side}, theta={theta:.1f}, phi={phi:.1f}），crop 已存至 debug_vr_crops/")
+                        del face_crop_tensor
+                        continue
+                    kps_on_crop = kps_on_crop_list[0]
+
+                    face_emb_crop, _ = self.models_processor.run_recognize_direct(
+                        face_crop_tensor, kps_on_crop,
+                        control['SimilarityTypeSelection'], control['RecognitionModelSelection']
+                    )
+
+                    best_target_button_vr, best_params_for_target_vr, best_sim_vr = self._find_best_target_match(
+                        face_emb_crop, control
+                    )
+
+                    # 更新显示叠加数据的匹配信息（与 det_faces_data_for_display 末项对应）
+                    det_faces_data_for_display[-1]['embedding'] = face_emb_crop
+                    self.target_matches[-1] = [(best_target_button_vr.face_id, best_sim_vr)] if best_target_button_vr else []
+
+                    if best_target_button_vr:
+                        analyzed_faces_for_vr.append({
+                            'theta': theta, 'phi': phi,
+                            'original_eye_side': original_eye_side,
+                            'face_crop_tensor': face_crop_tensor,
+                            'kps_on_crop': kps_on_crop,
+                            'target_button': best_target_button_vr,
+                            'params': best_params_for_target_vr,
+                            'fov_used_for_crop': dynamic_fov_for_crop, # Store the dynamic FOV
+                        })
+                    else: # No matching target face in UI
                         print(f"VR180: 未匹配到目标人脸（eye={original_eye_side}, 该脸与目标卡的最高相似度={best_sim_vr:.1f}，未达阈值）")
-                    del face_crop_tensor
+                        del face_crop_tensor
 
 
             swap_button_is_checked_global = self.main_window.swapfacesButton.isChecked() # Cache this
@@ -626,47 +621,44 @@ class FrameWorker(threading.Thread):
                         eye_side_for_debug=f"{item_data['original_eye_side']}"
                     )
 
-                current_crop_key = f"{item_data['original_eye_side']}_{item_data['theta']}_{item_data['phi']}" # More unique key                
+                current_crop_key = f"{item_data['original_eye_side']}_{item_data['theta']}_{item_data['phi']}" # More unique key
                 processed_perspective_crops_details[current_crop_key] = { # Corrected key
                     'tensor_rgb_uint8': processed_crop_for_stitching, # Corrected value: use the (potentially) processed crop
                     'theta': item_data['theta'],
                     'phi': item_data['phi'],
-                    # 'original_eye_side': item_data['original_eye_side'], # For debug
-                    # 'kps_on_crop': item_data['kps_on_crop'], # For debug
                     'fov_used_for_crop': item_data['fov_used_for_crop'] # Pass the dynamic FOV
                 }
 
                 del item_data['face_crop_tensor'] # Moved inside the loop to clean up for current item
-            
+
             # Stitch processed crops back
             # Start with the original equirect image as a Torch tensor
-            # equirect_converter.equirect_tensor_cxhxw_rgb_uint8 is already CHW RGB uint8 on device
             final_equirect_torch_cxhxw_rgb_uint8 = original_equirect_tensor_for_vr.clone() # Use the pristine clone
-            
-            p2e_converter = PerspectiveConverter(
-                img_numpy_rgb_uint8, device=self.models_processor.device
-            )
 
             for eye_side, data in processed_perspective_crops_details.items():
+                # 半幅独立缝合：反投影几何与该 crop 的投影几何一致，
+                # target 传对应半幅的切片 view，in-place 写回整幅图。
+                eye_x_offset = 0 if eye_side.split('_')[0] == "L" else half_width
+                half_img_np_stitch = np.ascontiguousarray(img_numpy_rgb_uint8[:, eye_x_offset:eye_x_offset + half_width, :])
+                p2e_converter = PerspectiveConverter(half_img_np_stitch, device=self.models_processor.device)
                 # data['tensor_rgb_uint8'] is already CHW RGB uint8 Torch tensor on GPU
                 p2e_converter.stitch_single_perspective(
-                    target_equirect_torch_cxhxw_rgb_uint8=final_equirect_torch_cxhxw_rgb_uint8, # Modified in-place
+                    target_equirect_torch_cxhxw_rgb_uint8=final_equirect_torch_cxhxw_rgb_uint8[:, :, eye_x_offset:eye_x_offset + half_width], # Modified in-place (slice view)
                     processed_crop_torch_cxhxw_rgb_uint8=data['tensor_rgb_uint8'],
                     theta=data['theta'], phi=data['phi'], fov=data['fov_used_for_crop'], # Use stored dynamic FOV
-                    is_left_eye=("L" in eye_side.split('_')[0]) # Correctly use eye_side (key of the loop)
+                    is_left_eye=None # 半幅独立处理，无需跨眼掩码
                 )
-            
+                del p2e_converter
+
             processed_tensor_rgb_uint8 = final_equirect_torch_cxhxw_rgb_uint8
 
 
             # GPU Memory Cleanup for VR path
-            if 'equirect_converter' in locals(): 
+            if 'equirect_converter' in locals():
                 for key in list(processed_perspective_crops_details.keys()): # Iterate over a copy of keys
                     if 'tensor_rgb_uint8' in processed_perspective_crops_details[key]:
                         del processed_perspective_crops_details[key]['tensor_rgb_uint8'] # Delete the tensor
-                    # del processed_perspective_crops_details[key] # Deleting the inner dict entry                
                 del equirect_converter
-            if 'p2e_converter' in locals(): del p2e_converter
             if 'original_equirect_tensor_for_vr' in locals(): del original_equirect_tensor_for_vr
             if 'processed_perspective_crops_details' in locals(): del processed_perspective_crops_details
             del analyzed_faces_for_vr # Clean up list

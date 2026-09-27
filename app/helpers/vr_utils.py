@@ -43,13 +43,12 @@ class EquirectangularConverter:
 
         return theta, phi
 
-    def get_perspective_crop(self, FOV: float, THETA: float, PHI: float, height: int, width: int, eye_side: str = "") -> torch.Tensor:
+    def get_perspective_crop(self, FOV: float, THETA: float, PHI: float, height: int, width: int) -> torch.Tensor:
         """
         Returns a perspective crop as a Torch tensor (C, H, W) in RGB, uint8 format, on GPU.
-        eye_side: 'L'/'R' 钳制采样到对应眼的半幅（SBS VR180 素材防跨眼混合）。
         """
         # E2P_Equirectangular.GetPerspective now returns a Torch tensor (CHW, RGB, uint8)
-        persp_torch_cxhxw_rgb_uint8 = self.e2p_instance.GetPerspective(FOV, THETA, PHI, height, width, eye_side=eye_side)
+        persp_torch_cxhxw_rgb_uint8 = self.e2p_instance.GetPerspective(FOV, THETA, PHI, height, width)
         return persp_torch_cxhxw_rgb_uint8
 
 
@@ -100,14 +99,18 @@ class PerspectiveConverter:
 
 
     def stitch_single_perspective(self,
-                                  target_equirect_torch_cxhxw_rgb_uint8: torch.Tensor,
-                                  processed_crop_torch_cxhxw_rgb_uint8: torch.Tensor,
-                                  theta: float, phi: float, fov: float,
-                                  is_left_eye: bool):
+                                 target_equirect_torch_cxhxw_rgb_uint8: torch.Tensor,
+                                 processed_crop_torch_cxhxw_rgb_uint8: torch.Tensor,
+                                 theta: float, phi: float, fov: float,
+                                 is_left_eye: bool | None = None):
         """
         Stitches a single processed perspective crop back into the target equirectangular image.
         Modifies target_equirect_torch_cxhxw_rgb_uint8 in place.
         Assumes all tensors are on self.device.
+
+        使用约定：调用方按"每眼半幅独立全景"使用——本实例与 target 均为同一半幅的图，
+        crop 的投影几何与反投影几何天然一致，无需跨眼区域掩码。
+        is_left_eye 仅为旧接口兼容保留，不再参与掩码计算。
         """
 
         # The FOV for P2E_Perspective must match the FOV of the processed_crop_torch_cxhxw_rgb_uint8.
@@ -122,19 +125,12 @@ class PerspectiveConverter:
         # mask_torch_original_shape: (1, H, W) boolean, indicating valid warped pixels.
         equirect_component_torch, mask_torch_original_shape = p2e_instance.GetEquirec(self.orig_height, self.orig_width)
 
-        # Create eye region mask (1, H, W) to define the current eye's hemisphere
-        eye_region_mask = torch.zeros_like(mask_torch_original_shape, dtype=torch.bool) 
-        half_width = self.orig_width // 2
-        if is_left_eye:
-            eye_region_mask[:, :, :half_width] = True
-        else:
-            eye_region_mask[:, :, half_width:] = True
+        # 半幅独立处理模型下不再需要跨眼区域掩码（原 eye_region_mask 会把半幅错误地再切一半），
+        # 直接使用反投影有效域掩码。
+        effective_mask_torch_original_shape = mask_torch_original_shape
 
-        # Apply eye region mask to the original projection mask to make it eye-specific
-        eye_specific_mask_torch_original_shape = mask_torch_original_shape & eye_region_mask
-
-        # Feather the eye-specific mask
-        feathered_mask_torch_float_1hw = self._apply_feathering(eye_specific_mask_torch_original_shape) # Returns 1HW float
+        # Feather the effective mask
+        feathered_mask_torch_float_1hw = self._apply_feathering(effective_mask_torch_original_shape) # Returns 1HW float
 
         target_equirect_float = target_equirect_torch_cxhxw_rgb_uint8.float() / 255.0
 
@@ -145,10 +141,10 @@ class PerspectiveConverter:
         composite_float = target_equirect_float * (1.0 - feathered_mask_torch_float_1hw) + \
                           equirect_component_float * feathered_mask_torch_float_1hw
 
-        # Use the eye-specific (non-feathered) mask for direct replacement areas
-        # eye_specific_mask_torch_original_shape is (1, H, W) boolean
+        # Use the effective (non-feathered) mask for direct replacement areas
+        # effective_mask_torch_original_shape is (1, H, W) boolean
         # Expand to (C, H, W) for torch.where
-        mask_for_where = eye_specific_mask_torch_original_shape.expand_as(target_equirect_float)
+        mask_for_where = effective_mask_torch_original_shape.expand_as(target_equirect_float)
         
         final_blended_float = torch.where(mask_for_where, composite_float, target_equirect_float)
         
@@ -156,7 +152,6 @@ class PerspectiveConverter:
 
         # Explicitly delete intermediate tensors if memory is tight, though Python's GC + PyTorch should handle it.
         del p2e_instance, equirect_component_torch, mask_torch_original_shape
-        del eye_region_mask, eye_specific_mask_torch_original_shape 
         del feathered_mask_torch_float_1hw
         del target_equirect_float, equirect_component_float, composite_float, mask_for_where, final_blended_float
  
