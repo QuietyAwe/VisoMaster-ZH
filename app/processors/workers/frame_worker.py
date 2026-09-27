@@ -528,6 +528,7 @@ class FrameWorker(threading.Thread):
 
             # Detect faces on the full equirectangular image to guide perspective cropping
             # run_detect expects CxHxW tensor
+            _t0 = time.perf_counter()
             bboxes_eq_np, kpss_5_eq_np, kpss_all_eq_np = self.models_processor.run_detect(
                 processed_tensor_rgb_uint8, # Detect on the pristine original
                 control['DetectorModelSelection'],
@@ -541,6 +542,7 @@ class FrameWorker(threading.Thread):
                 from_points=control["DetectFromPointsToggle"],
                 rotation_angles=[0] if not control["AutoRotationToggle"] else [0, 90, 180, 270]
             )
+            _rec('detect', time.perf_counter() - _t0)
 
             processed_perspective_crops_details = {}
 
@@ -574,10 +576,12 @@ class FrameWorker(threading.Thread):
                 crop_render_height = self.VR_PERSPECTIVE_RENDER_SIZE
                 crop_render_width = self.VR_PERSPECTIVE_RENDER_SIZE
 
+                _t0 = time.perf_counter()
                 face_crop_tensor = equirect_converter.get_perspective_crop(
                     FOV=dynamic_fov_for_crop, THETA=theta, PHI=phi,
                     height=crop_render_height, width=crop_render_width
                 )
+                _rec('project', time.perf_counter() - _t0)
                 if face_crop_tensor is None or face_crop_tensor.numel() == 0:
                     _vr_diag_once("crop_empty", f"VR180: 投影 crop 为空，跳过该人脸（eye={original_eye_side}, theta={theta:.1f}, phi={phi:.1f}）")
                     continue
@@ -591,10 +595,12 @@ class FrameWorker(threading.Thread):
                     crop_render_width, crop_render_height
                 )
 
+                _t0 = time.perf_counter()
                 face_emb_crop, _ = self.models_processor.run_recognize_direct(
                     face_crop_tensor, kps_on_crop,
                     control['SimilarityTypeSelection'], control['RecognitionModelSelection']
                 )
+                _rec('recognize', time.perf_counter() - _t0)
                 
                 best_target_button_vr, best_params_for_target_vr, best_sim_vr = self._find_best_target_match(
                     face_emb_crop, control,
@@ -629,6 +635,7 @@ class FrameWorker(threading.Thread):
             swap_button_is_checked_global = self.main_window.swapfacesButton.isChecked() # Cache this
             edit_button_is_checked_global = self.main_window.editFacesButton.isChecked()
 
+            _t0 = time.perf_counter()
             for item_data in analyzed_faces_for_vr:
                 processed_crop_for_stitching = item_data['face_crop_tensor'] # Default to original crop
                 if swap_button_is_checked_global or edit_button_is_checked_global: # Only process if swap/edit is on
@@ -654,7 +661,8 @@ class FrameWorker(threading.Thread):
                 }
 
                 del item_data['face_crop_tensor'] # Moved inside the loop to clean up for current item
-            
+            _rec('swap', time.perf_counter() - _t0)
+
             # Stitch processed crops back（原地缝合写回，免去 8K 克隆，省约 95MB 显存拷贝/帧）
             final_equirect_torch_cxhxw_rgb_uint8 = processed_tensor_rgb_uint8
 
@@ -662,6 +670,7 @@ class FrameWorker(threading.Thread):
                 processed_tensor_rgb_uint8, device=self.models_processor.device
             )
 
+            _t0 = time.perf_counter()
             for eye_side, data in processed_perspective_crops_details.items():
                 # data['tensor_rgb_uint8'] is already CHW RGB uint8 Torch tensor on GPU
                 p2e_converter.stitch_single_perspective(
@@ -670,7 +679,8 @@ class FrameWorker(threading.Thread):
                     theta=data['theta'], phi=data['phi'], fov=data['fov_used_for_crop'], # Use stored dynamic FOV
                     is_left_eye=("L" in eye_side.split('_')[0]) # Correctly use eye_side (key of the loop)
                 )
-            
+            _rec('stitch', time.perf_counter() - _t0)
+
             processed_tensor_rgb_uint8 = final_equirect_torch_cxhxw_rgb_uint8
             # 局部显存变量随作用域自动回收；不逐帧 torch.cuda.empty_cache()——
             # 它会强制同步并摧毁分配器缓存池（见 video_processor 中的同名说明）。

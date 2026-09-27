@@ -90,11 +90,13 @@ class RenderProfiler:
             ('marker_update', '标记参数更新(model_lock)'),
             ('worker_create', 'FrameWorker创建/拷贝'),
             ('load_to_vram', '载入显存(H2D)'),
+            ('project', 'VR投影crop'),
             ('detect', '人脸检测'),
             ('recognize', '人脸识别(特征提取)'),
             ('swap', '人脸交换'),
             ('edit_face', '编辑人脸'),
             ('enhance', '超分/增强'),
+            ('stitch', 'VR缝合回写'),
             ('to_numpy', '回传内存(D2H)'),
             ('other_ai', '其他AI开销'),
         ]
