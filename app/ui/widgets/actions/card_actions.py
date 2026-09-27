@@ -173,11 +173,11 @@ def find_target_faces(main_window: 'MainWindow'):
                         FOV=dynamic_fov, THETA=theta, PHI=phi, height=512, width=512
                     )
                     if face_crop_tensor is not None and face_crop_tensor.numel() > 0:
-                        # 宽松阈值：此处必有一张脸（全景端已检出），二次检测只为定位
-                        # 关键点；沿用界面检测分数会把 0.2-0.43 分的真脸整批过滤掉
+                        # 宽松阈值：二次检测仅为增强（软脸/特写实测打分仅 0.1-0.43），
+                        # 失败或位置异常时退回换算关键点，embedding 仍与管线同域
                         _, kps_on_crop_list, _ = main_window.models_processor.run_detect(
                             face_crop_tensor, control['DetectorModelSelection'], max_num=1,
-                            score=min(control['DetectorScoreSlider']/100.0, 0.2),
+                            score=min(control['DetectorScoreSlider']/100.0, 0.1),
                             input_size=(512, 512),
                             use_landmark_detection=control['LandmarkDetectToggle'],
                             landmark_detect_mode=control['LandmarkDetectModelSelection'],
@@ -185,21 +185,27 @@ def find_target_faces(main_window: 'MainWindow'):
                             from_points=control["DetectFromPointsToggle"], rotation_angles=[0]
                         )
                         has_kps = kps_on_crop_list.any() if isinstance(kps_on_crop_list, numpy.ndarray) else bool(kps_on_crop_list)
+                        # 全景 kps → crop 坐标换算（兜底与误检校验基准，实测误差约 5px）
+                        bbox_cx = (bbox_single[0] + bbox_single[2]) / 2.0
+                        bbox_cy = (bbox_single[1] + bbox_single[3]) / 2.0
+                        scale_x = 512.0 * 360.0 / (equirect_converter.width * dynamic_fov)
+                        scale_y = 512.0 * 180.0 / (equirect_converter.height * dynamic_fov)
+                        kps_proj = numpy.stack([
+                            (face_kps[:, 0] - bbox_cx) * scale_x + 256.0,
+                            (face_kps[:, 1] - bbox_cy) * scale_y + 256.0,
+                        ], axis=1).astype('float32')
+                        recognize_img = face_crop_tensor
                         if has_kps:
-                            recognize_img, recognize_kps = face_crop_tensor, kps_on_crop_list[0]
+                            recognize_kps = kps_on_crop_list[0]
+                            # 误检防御：kps 中心远离 crop 中心（脸必然居中）视为误检
+                            kc_x = float(numpy.mean(recognize_kps[:, 0]))
+                            kc_y = float(numpy.mean(recognize_kps[:, 1]))
+                            if abs(kc_x - 256.0) > 512.0 * 0.3 or abs(kc_y - 256.0) > 512.0 * 0.3:
+                                print(f"查找面部(VR180): crop 检测关键点位置异常，改用换算关键点（theta={theta:.1f}, phi={phi:.1f}）")
+                                recognize_kps = kps_proj
                         else:
-                            # 兜底：crop 内检测失败时用全景 kps 线性换算到 crop 坐标，
-                            # 保证目标脸 embedding 始终与 VR 管线匹配端同域
-                            bbox_cx = (bbox_single[0] + bbox_single[2]) / 2.0
-                            bbox_cy = (bbox_single[1] + bbox_single[3]) / 2.0
-                            scale_x = 512.0 * 360.0 / (equirect_converter.width * dynamic_fov)
-                            scale_y = 512.0 * 180.0 / (equirect_converter.height * dynamic_fov)
-                            recognize_kps = numpy.stack([
-                                (face_kps[:, 0] - bbox_cx) * scale_x + 256.0,
-                                (face_kps[:, 1] - bbox_cy) * scale_y + 256.0,
-                            ], axis=1).astype('float32')
-                            recognize_img = face_crop_tensor
-                            print(f"查找面部(VR180): crop 内未检出关键点，已用全景关键点换算兜底（theta={theta:.1f}, phi={phi:.1f}）")
+                            recognize_kps = kps_proj
+                            print(f"查找面部(VR180): crop 内二次检测未出关键点，已用全景关键点换算继续（theta={theta:.1f}, phi={phi:.1f}）")
                 face_emb, cropped_img = main_window.models_processor.run_recognize_direct(recognize_img, recognize_kps, control['SimilarityTypeSelection'], control['RecognitionModelSelection'])
                 ret.append([recognize_kps, face_emb, cropped_img, recognize_img])
 

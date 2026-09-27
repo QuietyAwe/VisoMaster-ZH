@@ -548,13 +548,13 @@ class FrameWorker(threading.Thread):
                     print(f"VR180: 投影 crop 为空，跳过该人脸（eye={original_eye_side}, theta={theta:.1f}, phi={phi:.1f}）")
                     continue
 
-                # crop 内二次检测仅用于定位关键点（此处必有一张脸——全景端已检出）。
-                # 实测 RetinaFace 对歪头/俯视/特写 crop 脸的打分仅 0.2-0.43，若沿用界面
-                # 的检测分数阈值会被整批过滤（表现为"边界框有、却不换脸"），故用宽松
-                # 阈值只拒绝明显的非脸响应；万一仍检不到则走下方关键点换算兜底。
+                # crop 内二次检测仅是"增强"：为换脸对齐提供更准的 crop 域关键点。
+                # 该检测非必需——检测不到/位置异常时一律退回全景 kps 换算（实测误差约 5px），
+                # 换脸流程不受其成败影响。此处必有一张脸（全景端已检出），故用极宽松阈值：
+                # 实测放大软脸/特写的打分仅 0.1-0.43，沿用界面检测分数会把真脸整批过滤。
                 _, kps_on_crop_list, _ = self.models_processor.run_detect(
                     face_crop_tensor, control['DetectorModelSelection'], max_num=1,
-                    score=min(control['DetectorScoreSlider']/100.0, 0.2),
+                    score=min(control['DetectorScoreSlider']/100.0, 0.1),
                     input_size=(crop_render_height, crop_render_width), # Use actual render dimensions
                     use_landmark_detection=control['LandmarkDetectToggle'],
                     landmark_detect_mode=control['LandmarkDetectModelSelection'],
@@ -572,18 +572,19 @@ class FrameWorker(threading.Thread):
                 # If kps_on_crop_list is an unexpected type, it might fall through.
                 # If it's a non-empty list, no_valid_kps remains False.
 
+                # 全景 kps → crop 坐标的线性换算（兜底与误检校验的基准，实测误差约 5px）
+                bbox_cx = (bbox_eq_single[0] + bbox_eq_single[2]) / 2.0
+                bbox_cy = (bbox_eq_single[1] + bbox_eq_single[3]) / 2.0
+                scale_x = crop_render_width * 360.0 / (equirect_converter.width * float(dynamic_fov_for_crop))
+                scale_y = crop_render_height * 180.0 / (equirect_converter.height * float(dynamic_fov_for_crop))
+                kps_proj = np.stack([
+                    (kps_5_eq_single[:, 0] - bbox_cx) * scale_x + crop_render_width / 2.0,
+                    (kps_5_eq_single[:, 1] - bbox_cy) * scale_y + crop_render_height / 2.0,
+                ], axis=1).astype(np.float32)
+
                 if no_valid_kps:
-                    # 兜底：crop 内二次检测失败时（连清晰正脸也会偶发失败），把全景检测的
-                    # 5 点关键点按角尺寸线性换算到 crop 坐标继续换脸，保证检测到的脸必能
-                    # 进入换脸流程，不再静默跳过。
-                    bbox_cx = (bbox_eq_single[0] + bbox_eq_single[2]) / 2.0
-                    bbox_cy = (bbox_eq_single[1] + bbox_eq_single[3]) / 2.0
-                    scale_x = crop_render_width * 360.0 / (equirect_converter.width * float(dynamic_fov_for_crop))
-                    scale_y = crop_render_height * 180.0 / (equirect_converter.height * float(dynamic_fov_for_crop))
-                    kps_on_crop = np.stack([
-                        (kps_5_eq_single[:, 0] - bbox_cx) * scale_x + crop_render_width / 2.0,
-                        (kps_5_eq_single[:, 1] - bbox_cy) * scale_y + crop_render_height / 2.0,
-                    ], axis=1).astype(np.float32)
+                    # 二次检测没出关键点：直接用换算关键点继续（检测只是增强，不是必需）
+                    kps_on_crop = kps_proj
                     try:
                         os.makedirs('debug_vr_crops', exist_ok=True)
                         cv2.imwrite(
@@ -592,9 +593,17 @@ class FrameWorker(threading.Thread):
                         )
                     except Exception:
                         pass
-                    print(f"VR180: crop 内未检出关键点，已用全景关键点换算兜底继续（eye={original_eye_side}, theta={theta:.1f}, phi={phi:.1f}）")
+                    print(f"VR180: crop 内二次检测未出关键点，已用全景关键点换算继续（eye={original_eye_side}, theta={theta:.1f}, phi={phi:.1f}）")
                 else:
                     kps_on_crop = kps_on_crop_list[0]
+                    # 误检防御：宽松阈值下若检测出的 kps 中心远离 crop 中心（脸必然居中），
+                    # 判为误检，退回换算关键点
+                    kc_x = float(np.mean(kps_on_crop[:, 0]))
+                    kc_y = float(np.mean(kps_on_crop[:, 1]))
+                    if abs(kc_x - crop_render_width / 2.0) > crop_render_width * 0.3 or \
+                       abs(kc_y - crop_render_height / 2.0) > crop_render_height * 0.3:
+                        print(f"VR180: crop 检测关键点位置异常（中心 {kc_x:.0f},{kc_y:.0f}），改用换算关键点（eye={original_eye_side}）")
+                        kps_on_crop = kps_proj
 
                 face_emb_crop, _ = self.models_processor.run_recognize_direct(
                     face_crop_tensor, kps_on_crop,
