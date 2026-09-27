@@ -32,6 +32,8 @@ dependencies/CUDA/
 dependencies/Python/
 dependencies/git-portable/
 dependencies/TensorRT/
+TensorRT-10.13.0.35/
+.codebuddy/
 *.mp4
 *.jpg
 *.exe

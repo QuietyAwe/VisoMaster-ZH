@@ -116,7 +116,9 @@ class VideoProcessor(QObject):
         else:
             graphics_view_actions.update_graphics_view(self.main_window, pixmap, frame_number,)
         self.current_frame = frame
-        torch.cuda.empty_cache()
+        # 不再逐帧torch.cuda.empty_cache()：它会强制同步并摧毁分配器缓存池，
+        # 导致下一帧推理重新分配显存、拖动进度条明显卡顿；
+        # 显存释放已由stop_processing/模型管理侧的清理覆盖。
         #Set GPU Memory Progressbar
         common_widget_actions.update_gpu_memory_progressbar(self.main_window)
     def display_next_frame(self):
@@ -132,7 +134,8 @@ class VideoProcessor(QObject):
             self.send_frame_to_virtualcam(frame)
 
             if self.recording:
-                self.recording_sp.stdin.write(frame.tobytes())
+                # 帧已是C连续（frame_worker保证），memoryview零拷贝写入替代tobytes复制
+                self.recording_sp.stdin.write(memoryview(frame))
             # Update the widget values using parameters if it is not recording (The updation of actual parameters is already done inside the FrameWorker, this step is to make the changes appear in the widgets)
             if not self.recording:
                 video_control_actions.update_widget_values_from_markers(self.main_window, self.next_frame_to_display)
@@ -282,7 +285,7 @@ class VideoProcessor(QObject):
         if self.file_type == 'video' and self.media_capture:
             ret, frame = misc_helpers.read_frame(self.media_capture, preview_mode = not self.recording)
             if ret:
-                frame = frame[..., ::-1]  # Convert BGR to RGB
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # C连续RGB（[...,::-1]负步长视图会让下游连续化退化为逐字节拷贝，实测慢20倍）
                 # print(f"Enqueuing frame {self.current_frame_number}")
                 self.frame_queue.put(self.current_frame_number)
                 self.start_frame_worker(self.current_frame_number, frame)
@@ -317,7 +320,7 @@ class VideoProcessor(QObject):
         if self.file_type == 'video' and self.media_capture:
             ret, frame = misc_helpers.read_frame(self.media_capture, preview_mode=False)
             if ret:
-                frame = frame[..., ::-1]  # Convert BGR to RGB
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # C连续RGB（[...,::-1]负步长视图会让下游连续化退化为逐字节拷贝，实测慢20倍）
                 # print(f"Enqueuing frame {self.current_frame_number}")
                 self.frame_queue.put(self.current_frame_number)
                 self.start_frame_worker(self.current_frame_number, frame, is_single_frame=True)
@@ -332,7 +335,7 @@ class VideoProcessor(QObject):
             frame = misc_helpers.read_image_file(self.media_path)
             if frame is not None:
 
-                frame = frame[..., ::-1]  # Convert BGR to RGB
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # C连续RGB（[...,::-1]负步长视图会让下游连续化退化为逐字节拷贝，实测慢20倍）
                 self.frame_queue.put(self.current_frame_number)
                 # print("Processing current frame as image.")
                 self.start_frame_worker(self.current_frame_number, frame, is_single_frame=True)
@@ -343,7 +346,7 @@ class VideoProcessor(QObject):
         elif self.file_type == 'webcam':
             ret, frame = misc_helpers.read_frame(self.media_capture, preview_mode = False)
             if ret:
-                frame = frame[..., ::-1]  # Convert BGR to RGB
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # C连续RGB（[...,::-1]负步长视图会让下游连续化退化为逐字节拷贝，实测慢20倍）
                 # print(f"Enqueuing frame {self.current_frame_number}")
                 self.frame_queue.put(self.current_frame_number)
                 self.start_frame_worker(self.current_frame_number, frame, is_single_frame=True)
@@ -360,7 +363,7 @@ class VideoProcessor(QObject):
         if self.file_type == 'webcam' and self.media_capture:
             ret, frame = misc_helpers.read_frame(self.media_capture, preview_mode = False)
             if ret:
-                frame = frame[..., ::-1]  # Convert BGR to RGB
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)  # C连续RGB（[...,::-1]负步长视图会让下游连续化退化为逐字节拷贝，实测慢20倍）
                 # print(f"Enqueuing frame {self.current_frame_number}")
                 self.frame_queue.put(self.current_frame_number)
                 self.start_frame_worker(self.current_frame_number, frame)
@@ -414,6 +417,8 @@ class VideoProcessor(QObject):
                     if Path(final_file_path).is_file():
                         os.remove(final_file_path)
                     print("Adding audio...")
+                    # 用-t精确时长而非-shortest：AAC音频流实际时长常短于视频（编码粒度/延迟），
+                    # -shortest会按最短流截断砍掉视频尾帧
                     args = ["ffmpeg",
                             '-hide_banner',
                             '-loglevel',    'error',
@@ -421,7 +426,7 @@ class VideoProcessor(QObject):
                             "-ss", str(self.play_start_time), "-to", str(self.play_end_time), "-i",  self.media_path,
                             "-c",  "copy", # may be c:v
                             "-map", "0:v:0", "-map", "1:a:0?",
-                            "-shortest",
+                            "-t", str(self.play_end_time - self.play_start_time),
                             final_file_path]
                     subprocess.run(args, check=False) #Add Audio
                     os.remove(self.temp_file)

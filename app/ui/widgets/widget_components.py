@@ -414,7 +414,7 @@ class TargetFaceCardButton(CardButton):
         # Colour of this target face, (re)assigned by
         # card_actions.refresh_target_face_colors() from the current list order.
         self.color = TARGET_FACE_COLORS[0]
-        # Set while an input face using this target face is hovered / selected.
+        # Set while an input face using this target face is hovered.
         self.highlighted = False
         # Thumbnail size without the highlight ring, captured on the first highlight.
         self._base_icon_size = None
@@ -725,6 +725,13 @@ class InputFaceCardButton(CardButton):
             card_actions.refresh_target_face_highlights(self.main_window)
         super().leaveEvent(event)
 
+    def hideEvent(self, event):
+        # A card hidden under the cursor (e.g. by the list filter) gets no leaveEvent.
+        if self.main_window and getattr(self.main_window, 'hovered_input_face_id', None) == self.face_id:
+            self.main_window.hovered_input_face_id = None
+            card_actions.refresh_target_face_highlights(self.main_window)
+        super().hideEvent(event)
+
     def load_input_face(self):
         main_window = self.main_window
 
@@ -778,8 +785,6 @@ class InputFaceCardButton(CardButton):
                     if input_face_button!=self:
                         input_face_button.setChecked(False)
 
-        # Keep the target faces using this input face highlighted after the click.
-        main_window.highlighted_input_face_id = self.face_id
         card_actions.refresh_input_faces_usage_markers(main_window)
         common_widget_actions.refresh_frame(main_window)
         
@@ -788,8 +793,6 @@ class InputFaceCardButton(CardButton):
         i = self.get_item_position()
         main_window.inputFacesList.takeItem(i)   
         main_window.input_faces.pop(self.face_id)
-        if getattr(main_window, 'highlighted_input_face_id', None) == self.face_id:
-            main_window.highlighted_input_face_id = None
         if getattr(main_window, 'hovered_input_face_id', None) == self.face_id:
             main_window.hovered_input_face_id = None
         for target_face_id in main_window.target_faces:

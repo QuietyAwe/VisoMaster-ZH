@@ -1,5 +1,6 @@
 import os
 import threading
+import time
 from typing import TYPE_CHECKING, Callable
 from functools import partial
 
@@ -233,15 +234,27 @@ def get_pixmap_from_frame(main_window: 'MainWindow', frame: np.ndarray):
         bytes_per_line = width
         q_img = QtGui.QImage(frame.data, width, height, bytes_per_line, QtGui.QImage.Format.Format_Grayscale8)
     else:
-        # Frame in color
+        # Frame in color (BGR，由frame_worker/cv2产出，C连续)
+        # 直接用Format_BGR888解释内存布局，省掉rgbSwapped()的全帧拷贝
         bytes_per_line = 3 * width
-        q_img = QtGui.QImage(frame.data, width, height, bytes_per_line, QtGui.QImage.Format.Format_RGB888).rgbSwapped()
+        q_img = QtGui.QImage(frame.data, width, height, bytes_per_line, QtGui.QImage.Format.Format_BGR888)
     pixmap = QtGui.QPixmap.fromImage(q_img)
     return pixmap
 
 
+_gpu_mem_update_lock = threading.Lock()
+_gpu_mem_last_update = 0.0
+
+
 def update_gpu_memory_progressbar(main_window: 'MainWindow'):
-    threading.Thread(target=partial(_update_gpu_memory_progressbar, main_window)).start()
+    """更新显存进度条（节流≥500ms，避免逐帧新建线程查询显存）"""
+    global _gpu_mem_last_update
+    now = time.time()
+    with _gpu_mem_update_lock:
+        if now - _gpu_mem_last_update < 0.5:
+            return
+        _gpu_mem_last_update = now
+    threading.Thread(target=partial(_update_gpu_memory_progressbar, main_window), daemon=True).start()
 
 def _update_gpu_memory_progressbar(main_window: 'MainWindow'):
     memory_used, memory_total = main_window.models_processor.get_gpu_memory()
