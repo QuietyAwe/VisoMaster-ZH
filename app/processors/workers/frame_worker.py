@@ -548,9 +548,13 @@ class FrameWorker(threading.Thread):
                     print(f"VR180: 投影 crop 为空，跳过该人脸（eye={original_eye_side}, theta={theta:.1f}, phi={phi:.1f}）")
                     continue
 
+                # crop 内二次检测仅用于定位关键点（此处必有一张脸——全景端已检出）。
+                # 实测 RetinaFace 对歪头/俯视/特写 crop 脸的打分仅 0.2-0.43，若沿用界面
+                # 的检测分数阈值会被整批过滤（表现为"边界框有、却不换脸"），故用宽松
+                # 阈值只拒绝明显的非脸响应；万一仍检不到则走下方关键点换算兜底。
                 _, kps_on_crop_list, _ = self.models_processor.run_detect(
                     face_crop_tensor, control['DetectorModelSelection'], max_num=1,
-                    score=control['DetectorScoreSlider']/100.0,
+                    score=min(control['DetectorScoreSlider']/100.0, 0.2),
                     input_size=(crop_render_height, crop_render_width), # Use actual render dimensions
                     use_landmark_detection=control['LandmarkDetectToggle'],
                     landmark_detect_mode=control['LandmarkDetectModelSelection'],

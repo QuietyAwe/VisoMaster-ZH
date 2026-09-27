@@ -173,9 +173,11 @@ def find_target_faces(main_window: 'MainWindow'):
                         FOV=dynamic_fov, THETA=theta, PHI=phi, height=512, width=512
                     )
                     if face_crop_tensor is not None and face_crop_tensor.numel() > 0:
+                        # 宽松阈值：此处必有一张脸（全景端已检出），二次检测只为定位
+                        # 关键点；沿用界面检测分数会把 0.2-0.43 分的真脸整批过滤掉
                         _, kps_on_crop_list, _ = main_window.models_processor.run_detect(
                             face_crop_tensor, control['DetectorModelSelection'], max_num=1,
-                            score=control['DetectorScoreSlider']/100.0,
+                            score=min(control['DetectorScoreSlider']/100.0, 0.2),
                             input_size=(512, 512),
                             use_landmark_detection=control['LandmarkDetectToggle'],
                             landmark_detect_mode=control['LandmarkDetectModelSelection'],
