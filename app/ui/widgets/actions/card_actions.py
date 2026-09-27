@@ -173,11 +173,20 @@ def find_target_faces(main_window: 'MainWindow'):
                         FOV=dynamic_fov, THETA=theta, PHI=phi, height=512, width=512
                     )
                     if face_crop_tensor is not None and face_crop_tensor.numel() > 0:
-                        # 宽松阈值：二次检测仅为增强（软脸/特写实测打分仅 0.1-0.43），
-                        # 失败或位置异常时退回换算关键点，embedding 仍与管线同域
+                        # 检测前把 crop 缩到画布中央（脸占比 87%→58%）：检测模型对
+                        # 特写占比打分骤降（实测同图 87%→0.38、65%→0.83），与源画质无关
+                        detect_canvas_size = 512
+                        detect_inner_size = 341
+                        detect_pad = (detect_canvas_size - detect_inner_size) // 2
+                        detect_canvas = torch.zeros((3, 512, 512), dtype=torch.uint8, device=face_crop_tensor.device)
+                        inner_crop = torch.nn.functional.interpolate(
+                            face_crop_tensor.unsqueeze(0).float(), size=(detect_inner_size, detect_inner_size),
+                            mode='bilinear', align_corners=False
+                        ).squeeze(0).byte()
+                        detect_canvas[:, detect_pad:detect_pad + detect_inner_size, detect_pad:detect_pad + detect_inner_size] = inner_crop
                         _, kps_on_crop_list, _ = main_window.models_processor.run_detect(
-                            face_crop_tensor, control['DetectorModelSelection'], max_num=1,
-                            score=min(control['DetectorScoreSlider']/100.0, 0.1),
+                            detect_canvas, control['DetectorModelSelection'], max_num=1,
+                            score=control['DetectorScoreSlider']/100.0,
                             input_size=(512, 512),
                             use_landmark_detection=control['LandmarkDetectToggle'],
                             landmark_detect_mode=control['LandmarkDetectModelSelection'],
@@ -196,7 +205,8 @@ def find_target_faces(main_window: 'MainWindow'):
                         ], axis=1).astype('float32')
                         recognize_img = face_crop_tensor
                         if has_kps:
-                            recognize_kps = kps_on_crop_list[0]
+                            # 检测在缩小画布上进行，kps 换算回 crop 坐标
+                            recognize_kps = (kps_on_crop_list[0] - detect_pad) * (512.0 / detect_inner_size)
                             # 误检防御：kps 中心远离 crop 中心（脸必然居中）视为误检
                             kc_x = float(numpy.mean(recognize_kps[:, 0]))
                             kc_y = float(numpy.mean(recognize_kps[:, 1]))

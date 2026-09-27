@@ -548,14 +548,26 @@ class FrameWorker(threading.Thread):
                     print(f"VR180: 投影 crop 为空，跳过该人脸（eye={original_eye_side}, theta={theta:.1f}, phi={phi:.1f}）")
                     continue
 
-                # crop 内二次检测仅是"增强"：为换脸对齐提供更准的 crop 域关键点。
-                # 该检测非必需——检测不到/位置异常时一律退回全景 kps 换算（实测误差约 5px），
-                # 换脸流程不受其成败影响。此处必有一张脸（全景端已检出），故用极宽松阈值：
-                # 实测放大软脸/特写的打分仅 0.1-0.43，沿用界面检测分数会把真脸整批过滤。
+                # crop 内二次检测仅是"增强"：为换脸对齐提供更准的 crop 域关键点，
+                # 检测不到/位置异常时一律退回全景 kps 换算（实测误差约 5px），流程不受其成败影响。
+                # 关键预处理：检测模型对"脸占画幅>70% 的特写"打分骤降（实测同图占比
+                # 87%→0.38、76%→0.74、65%→0.83、43%→0.89），而投影 crop 的脸恒占 ~87%
+                # （FOV padding 决定，与源画质无关）。故检测前把 crop 缩到画布中央使脸
+                # 占比降到 ~58%，检出的 kps 再换算回 crop 坐标。
+                detect_canvas_size = 512
+                detect_inner_size = 341  # 512 的 2/3 → 脸占比约 58%
+                detect_pad = (detect_canvas_size - detect_inner_size) // 2
+                detect_canvas = torch.zeros((3, detect_canvas_size, detect_canvas_size), dtype=torch.uint8, device=face_crop_tensor.device)
+                inner_crop = torch.nn.functional.interpolate(
+                    face_crop_tensor.unsqueeze(0).float(), size=(detect_inner_size, detect_inner_size),
+                    mode='bilinear', align_corners=False
+                ).squeeze(0).byte()
+                detect_canvas[:, detect_pad:detect_pad + detect_inner_size, detect_pad:detect_pad + detect_inner_size] = inner_crop
+
                 _, kps_on_crop_list, _ = self.models_processor.run_detect(
-                    face_crop_tensor, control['DetectorModelSelection'], max_num=1,
-                    score=min(control['DetectorScoreSlider']/100.0, 0.1),
-                    input_size=(crop_render_height, crop_render_width), # Use actual render dimensions
+                    detect_canvas, control['DetectorModelSelection'], max_num=1,
+                    score=control['DetectorScoreSlider']/100.0,
+                    input_size=(detect_canvas_size, detect_canvas_size),
                     use_landmark_detection=control['LandmarkDetectToggle'],
                     landmark_detect_mode=control['LandmarkDetectModelSelection'],
                     landmark_score=control["LandmarkDetectScoreSlider"]/100.0,
@@ -595,7 +607,8 @@ class FrameWorker(threading.Thread):
                         pass
                     print(f"VR180: crop 内二次检测未出关键点，已用全景关键点换算继续（eye={original_eye_side}, theta={theta:.1f}, phi={phi:.1f}）")
                 else:
-                    kps_on_crop = kps_on_crop_list[0]
+                    # 检测在缩小画布上进行，kps 换算回 crop 坐标
+                    kps_on_crop = (kps_on_crop_list[0] - detect_pad) * (crop_render_width / detect_inner_size)
                     # 误检防御：宽松阈值下若检测出的 kps 中心远离 crop 中心（脸必然居中），
                     # 判为误检，退回换算关键点
                     kc_x = float(np.mean(kps_on_crop[:, 0]))
