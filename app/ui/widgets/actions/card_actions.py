@@ -150,7 +150,7 @@ def find_target_faces(main_window: 'MainWindow'):
             if control['ManualRotationEnableToggle'] and not vr180_mode:
                 img = v2.functional.rotate(img, angle=control['ManualRotationAngleSlider'], interpolation=v2.InterpolationMode.BILINEAR, expand=True)
 
-            bboxes, kpss_5, _ = main_window.models_processor.run_detect(img, control['DetectorModelSelection'], max_num=control['MaxFacesToDetectSlider'], score=control['DetectorScoreSlider']/100.0, input_size=(512, 512), use_landmark_detection=control['LandmarkDetectToggle'], landmark_detect_mode=control['LandmarkDetectModelSelection'], landmark_score=control["LandmarkDetectScoreSlider"]/100.0, from_points=control["DetectFromPointsToggle"], rotation_angles=[0] if not control["AutoRotationToggle"] else [0, 90, 180, 270])
+            bboxes, kpss_5, _ = main_window.models_processor.run_detect(img, control['DetectorModelSelection'], max_num=control['MaxFacesToDetectSlider'], score=control['DetectorScoreSlider']/100.0, input_size=(768, 768), use_landmark_detection=control['LandmarkDetectToggle'], landmark_detect_mode=control['LandmarkDetectModelSelection'], landmark_score=control["LandmarkDetectScoreSlider"]/100.0, from_points=control["DetectFromPointsToggle"], rotation_angles=[0] if not control["AutoRotationToggle"] else [0, 90, 180, 270])
 
             # VR180 模式：目标脸的 embedding 必须与 VR 处理管线的匹配端同域，
             # 即从投影校正后的透视 crop 提取，而不是从柱面畸变的全景图提取。
@@ -175,37 +175,12 @@ def find_target_faces(main_window: 'MainWindow'):
                         FOV=dynamic_fov, THETA=theta, PHI=phi, height=640, width=640
                     )
                     if face_crop_tensor is not None and face_crop_tensor.numel() > 0:
-                        _, kps_on_crop_list, _ = main_window.models_processor.run_detect(
-                            face_crop_tensor, control['DetectorModelSelection'], max_num=1,
-                            score=control['DetectorScoreSlider']/100.0,
-                            input_size=(640, 640),
-                            use_landmark_detection=control['LandmarkDetectToggle'],
-                            landmark_detect_mode=control['LandmarkDetectModelSelection'],
-                            landmark_score=control["LandmarkDetectScoreSlider"]/100.0,
-                            from_points=control["DetectFromPointsToggle"], rotation_angles=[0]
-                        )
-                        has_kps = kps_on_crop_list.any() if isinstance(kps_on_crop_list, numpy.ndarray) else bool(kps_on_crop_list)
-                        # 全景 kps → crop 坐标换算（兜底与误检校验基准，实测误差约 5px）
-                        bbox_cx = (bbox_single[0] + bbox_single[2]) / 2.0
-                        bbox_cy = (bbox_single[1] + bbox_single[3]) / 2.0
-                        scale_x = 640.0 * 360.0 / (equirect_converter.width * dynamic_fov)
-                        scale_y = 640.0 * 180.0 / (equirect_converter.height * dynamic_fov)
-                        kps_proj = numpy.stack([
-                            (face_kps[:, 0] - bbox_cx) * scale_x + 320.0,
-                            (face_kps[:, 1] - bbox_cy) * scale_y + 320.0,
-                        ], axis=1).astype('float32')
+                        # 全景 kps → crop 精确投影换算（与采样几何严格互逆），
+                        # 与 FrameWorker 的匹配端完全同域，不做 crop 内二次检测
                         recognize_img = face_crop_tensor
-                        if has_kps:
-                            recognize_kps = kps_on_crop_list[0]
-                            # 误检防御：kps 中心远离 crop 中心（脸必然居中）视为误检
-                            kc_x = float(numpy.mean(recognize_kps[:, 0]))
-                            kc_y = float(numpy.mean(recognize_kps[:, 1]))
-                            if abs(kc_x - 320.0) > 640.0 * 0.3 or abs(kc_y - 320.0) > 640.0 * 0.3:
-                                print(f"查找面部(VR180): crop 检测关键点位置异常，改用换算关键点（theta={theta:.1f}, phi={phi:.1f}）")
-                                recognize_kps = kps_proj
-                        else:
-                            recognize_kps = kps_proj
-                            print(f"查找面部(VR180): crop 内二次检测未出关键点，已用全景关键点换算继续（theta={theta:.1f}, phi={phi:.1f}）")
+                        recognize_kps = equirect_converter.project_pano_kps_to_crop(
+                            face_kps, dynamic_fov, theta, phi, 640, 640
+                        )
                 face_emb, cropped_img = main_window.models_processor.run_recognize_direct(recognize_img, recognize_kps, control['SimilarityTypeSelection'], control['RecognitionModelSelection'])
                 ret.append([recognize_kps, face_emb, cropped_img, recognize_img])
 
