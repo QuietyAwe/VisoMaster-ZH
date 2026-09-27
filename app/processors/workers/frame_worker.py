@@ -219,6 +219,13 @@ class FrameWorker(threading.Thread):
         # but still allow mask/original face generation if swap_core is structured that way.
         s_e_for_swap_core = s_e_for_swap_np if swap_button_is_checked_global else None
 
+        # 诊断：换脸已开启但目标卡没有有效源脸时，此路径此前完全静默，
+        # 表现为"匹配上了却不替换"，用户无从判断原因。
+        if swap_button_is_checked_global and s_e_for_swap_core is None and \
+           not (parameters_for_face['SwapModelSelection'] == 'DeepFaceLive (DFM)' and dfm_model_instance_local is not None) and \
+           not edit_button_is_checked_global:
+            print(f"VR180: 目标卡未分配有效的输入脸，跳过换脸（eye={eye_side_for_debug}）。请把输入脸拖到该目标卡上。")
+
         # Call swap_core if:
         # 1. Swapping is enabled and s_e_for_swap_core is valid (or DFM is configured).
         # 2. Editing is enabled (swap_core might be needed for mask/original_face even if not swapping).
@@ -318,12 +325,19 @@ class FrameWorker(threading.Thread):
         
         return processed_crop_torch_rgb_uint8
 
-    def _find_best_target_match(self, detected_embedding_np, control_global):
+    def _find_best_target_match(self, detected_embedding_np, control_global, require_input_embedding: bool = False):
         best_target_button = None
         best_params_pd = None
         highest_sim = -1.0 # Initialize to a value lower than any possible similarity
 
         for target_id, target_button_widget in list(self.main_window.target_faces.items()):
+            # 换脸模式下跳过未分配输入脸的目标卡：这类卡换不了脸，若被匹配命中
+            # 会表现为"明明匹配上了却不替换"，还会抢占本可换脸的相似卡（双目素材
+            # 下左右眼视图常被建成两张卡，只有一张拖了输入脸时另一侧就永远不换）。
+            if require_input_embedding:
+                emb_map = getattr(target_button_widget, 'assigned_input_embedding', None) or {}
+                if not any(v is not None and getattr(v, 'size', 0) > 0 for v in emb_map.values()):
+                    continue
             face_specific_params_dict = self.parameters.get(target_id, {})
             default_params_dict = dict(self.main_window.default_parameters) if isinstance(self.main_window.default_parameters, ParametersDict) else self.main_window.default_parameters
             
@@ -488,6 +502,10 @@ class FrameWorker(threading.Thread):
             # 供边界框/关键点/对比视图等公共叠加显示使用（显示数据记录在整幅全景坐标）。
             self.target_matches = []
 
+            # Cache UI button states once for the whole VR pass (used by matching + processing)
+            swap_button_is_checked_global = self.main_window.swapfacesButton.isChecked()
+            edit_button_is_checked_global = self.main_window.editFacesButton.isChecked()
+
             for eye_side_loop, x_offset in (("L", 0), ("R", half_width)):
                 # 每眼半幅独立构建投影几何（半幅自身是完整 360°x180° 等距柱状投影）
                 half_img_np = np.ascontiguousarray(img_numpy_rgb_uint8[:, x_offset:x_offset + half_width, :])
@@ -582,7 +600,8 @@ class FrameWorker(threading.Thread):
                     )
 
                     best_target_button_vr, best_params_for_target_vr, best_sim_vr = self._find_best_target_match(
-                        face_emb_crop, control
+                        face_emb_crop, control,
+                        require_input_embedding=swap_button_is_checked_global  # 换脸时只认已分配输入脸的卡
                     )
 
                     # 更新显示叠加数据的匹配信息（与 det_faces_data_for_display 末项对应）
@@ -600,12 +619,12 @@ class FrameWorker(threading.Thread):
                             'fov_used_for_crop': dynamic_fov_for_crop, # Store the dynamic FOV
                         })
                     else: # No matching target face in UI
-                        print(f"VR180: 未匹配到目标人脸（eye={original_eye_side}, 该脸与目标卡的最高相似度={best_sim_vr:.1f}，未达阈值）")
+                        if best_sim_vr <= -1.0 and self.main_window.target_faces:
+                            print(f"VR180: 未匹配到可用目标卡（eye={original_eye_side}）：没有分配了输入脸的目标卡，请把输入脸拖到目标卡上。")
+                        else:
+                            print(f"VR180: 未匹配到目标人脸（eye={original_eye_side}, 该脸与目标卡的最高相似度={best_sim_vr:.1f}，未达阈值）")
                         del face_crop_tensor
 
-
-            swap_button_is_checked_global = self.main_window.swapfacesButton.isChecked() # Cache this
-            edit_button_is_checked_global = self.main_window.editFacesButton.isChecked()
 
             for item_data in analyzed_faces_for_vr:
                 processed_crop_for_stitching = item_data['face_crop_tensor'] # Default to original crop
