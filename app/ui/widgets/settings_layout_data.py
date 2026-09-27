@@ -57,7 +57,7 @@ SETTINGS_LAYOUT_DATA: LayoutDictTypes = {
         },
         'LiveSoundSpeedDecimalSlider': {
             'level': 1,
-            'label': 'Audio Playback Speed',
+            'label': '音频播放速度',
             'min_value': '0.50',
             'max_value': '2.00',
             'default': '1.00',

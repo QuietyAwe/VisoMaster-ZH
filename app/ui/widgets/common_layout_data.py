@@ -228,205 +228,205 @@ COMMON_LAYOUT_DATA: LayoutDictTypes = {
             'help': '唇部重定向的倍数值。'
         },
     },
-    'ReF-LDM Denoiser': {
+    'ReF-LDM 去噪器': {
         'ReferenceKVTensorsSelection': {
             'level': 1, # Or your desired layout level
             'widget_type': 'SelectionBox',
-            'label': 'Reference K/V Tensors',
+            'label': '参考 K/V 张量',
             'control_name': 'ReferenceKVTensorsSelection',
             'options': [], # Will be populated by _populate_reference_kv_tensors
             'default': "", # Or a default filename if applicable
             # Add any 'condition_control' or 'parentToggle' if needed
-            'help': 'Select a Reference K/V Tensor file (*.pt). Files must be in "model_assets/reference_kv_data/".',
+            'help': '选择参考 K/V 张量文件（*.pt），文件须位于 "model_assets/reference_kv_data/" 目录。',
             'exec_function': lambda mw, val: mw.handle_reference_kv_file_change(val), # Trigger loading on UI change
             'exec_function_args': [] # No extra args needed
         },
         'UseReferenceExclusivePathToggle': { # New ToggleButton
             'level': 1,
             'widget_type': 'ToggleButton',
-            'label': 'Exclusive Reference Path',
+            'label': '独占参考路径',
             'control_name': 'UseReferenceExclusivePathToggle',
             'default': False,
-            'help': 'If enabled, forces the UNet to use only reference K/V for attention, maximizing focus on the reference features.'
+            'help': '启用后强制 UNet 仅使用参考 K/V 进行注意力计算，最大化参考特征的聚焦程度。'
         },
         'DenoiserBaseSeedSlider': {
             'level': 1,
             'widget_type': 'ParameterSlider',
-            'label': 'Base Seed',
+            'label': '基础随机种子',
             'control_name': 'DenoiserBaseSeedSlider',
             'min_value': '0', 'max_value': '999999', 'default': '220', 'step': 1,
-            'help': 'Set a fixed base seed for the denoiser. This seed will be used for all frames and both denoiser passes (if applicable) to ensure consistent noise patterns.'
+            'help': '为去噪器设置固定的基础随机种子。该种子将用于所有帧与两个去噪阶段，确保噪声模式一致。'
         },
         'DenoiserUNetEnableBeforeRestorersToggle': {
             'level': 1,
             'widget_type': 'ToggleButton',
-            'label': 'Enable Denoiser before Restorers',
+            'label': '启用修复前去噪器',
             'control_name': 'DenoiserUNetEnableBeforeRestorersToggle',
             'default': False,
-            'help': 'Enable UNet-based image denoising. This is applied to the 512x512 aligned/swapped face before other restorers.',
+            'help': '启用基于 UNet 的图像去噪，在其他修复器之前应用于 512x512 对齐/换脸后的面部。',
             'exec_function': control_actions.handle_denoiser_state_change,
             'exec_function_args': ['DenoiserUNetEnableBeforeRestorersToggle'],
         },
         'DenoiserModeSelectionBefore': {
             'level': 2,
             'widget_type': 'SelectionBox',
-            'label': 'Denoiser Mode (Before)',
+            'label': '去噪器模式（修复前）',
             'control_name': 'DenoiserModeSelectionBefore',
             'options': ["Single Step (Fast)", "Full Restore (DDIM)"],
             'default': "Single Step (Fast)",
             'parentToggle': 'DenoiserUNetEnableBeforeRestorersToggle',
             'requiredToggleValue': True,
-            'help': 'Denoising mode for the pass before restorers. Single Step is generally faster.'
+            'help': '修复前阶段的去噪模式。单步模式通常更快。'
         },
         'DenoiserSingleStepTimestepSliderBefore': {
             'level': 3,
             'widget_type': 'ParameterSlider',
-            'label': 'Single Step Timestep (t) (Before)',
+            'label': '单步时间步 (t)（修复前）',
             'control_name': 'DenoiserSingleStepTimestepSliderBefore',
             'min_value': '1', 'max_value': '999', 'default': '1', 'step': 1,
             'parentToggle': 'DenoiserUNetEnableBeforeRestorersToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionBefore',
             'requiredSelectionValue': "Single Step (Fast)",
-            'help': 'Timestep for single-step denoising (Before Restorers). Lower values mean less noise added/removed.'
+            'help': '单步去噪的时间步（修复前）。数值越小，添加/去除的噪声越少。'
         },
         'DenoiserDDIMStepsSliderBefore': {
             'level': 3,
             'widget_type': 'ParameterSlider',
-            'label': 'DDIM Steps (Before)',
+            'label': 'DDIM 步数（修复前）',
             'control_name': 'DenoiserDDIMStepsSliderBefore',
             'min_value': '10', 'max_value': '200', 'default': '20', 'step': 10,
             'parentToggle': 'DenoiserUNetEnableBeforeRestorersToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionBefore',
             'requiredSelectionValue': "Full Restore (DDIM)",
-            'help': "Number of DDIM steps for full restoration (Before Restorers). Higher = more detail, slower."
+            'help': "完整修复的 DDIM 步数（修复前）。步数越多细节越好，但速度越慢。"
         },
         'DenoiserCFGScaleDecimalSliderBefore': {
             'level': 3,
             'widget_type': 'ParameterDecimalSlider',
-            'label': 'CFG Scale (Before)',
+            'label': 'CFG 引导强度（修复前）',
             'control_name': 'DenoiserCFGScaleDecimalSliderBefore',
             'min_value': '1.0', 'max_value': '10.0', 'default': '1.0', 'step': 0.1, 'decimals': 1,
             'parentToggle': 'DenoiserUNetEnableBeforeRestorersToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionBefore',
             'requiredSelectionValue': "Full Restore (DDIM)",
-            'help': "Classifier-Free Guidance scale for DDIM (Before Restorers). Higher = stronger adherence to K/V."
+            'help': "DDIM 的无分类器引导强度（修复前）。数值越高越贴近参考 K/V。"
         },
         'DenoiserAfterFirstRestorerToggle': {
             'level': 1,
             'widget_type': 'ToggleButton',
-            'label': 'Enable Denoiser After first Restorer',
+            'label': '启用首个修复器后去噪器',
             'control_name': 'DenoiserAfterFirstRestorerToggle',
             'default': False,
-            'help': 'Apply the UNet Denoiser again after first restorer have been applied. Uses the same UNet model and step settings.',
+            'help': '在首个修复器之后再次应用 UNet 去噪器，使用相同的 UNet 模型与步数设置。',
             'exec_function': control_actions.handle_denoiser_state_change,
             'exec_function_args': ['DenoiserAfterFirstRestorerToggle'],
         },
         'DenoiserModeSelectionAfterFirst': {
             'level': 2,
             'widget_type': 'SelectionBox',
-            'label': 'Denoiser Mode (After)',
+            'label': '去噪器模式（首次修复后）',
             'control_name': 'DenoiserModeSelectionAfterFirst',
             'options': ["Single Step (Fast)", "Full Restore (DDIM)"],
             'default': "Single Step (Fast)",
             'parentToggle': 'DenoiserAfterFirstRestorerToggle',
             'requiredToggleValue': True,
-            'help': 'Denoising mode for the pass after first restorer. Single Step is generally faster.'
+            'help': '首个修复器之后阶段的去噪模式。单步模式通常更快。'
         },
         'DenoiserSingleStepTimestepSliderAfterFirst': {
             'level': 3,
             'widget_type': 'ParameterSlider',
-            'label': 'Single Step Timestep (t) (After)',
+            'label': '单步时间步 (t)（首次修复后）',
             'control_name': 'DenoiserSingleStepTimestepSliderAfterFirst',
             'min_value': '1', 'max_value': '999', 'default': '1', 'step': 1, # Max value was 200
             'parentToggle': 'DenoiserAfterFirstRestorerToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionAfterFirst',
             'requiredSelectionValue': "Single Step (Fast)",
-            'help': 'Timestep for single-step denoising (After first Restorer). Lower values mean less noise added/removed.'
+            'help': '单步去噪的时间步（首个修复器之后）。数值越小，添加/去除的噪声越少。'
         },
         'DenoiserDDIMStepsSliderAfterFirst': {
             'level': 3,
             'widget_type': 'ParameterSlider',
-            'label': 'DDIM Steps (After First)',
+            'label': 'DDIM 步数（首次修复后）',
             'control_name': 'DenoiserDDIMStepsSliderAfterFirst',
             'min_value': '10', 'max_value': '200', 'default': '20', 'step': 10,
             'parentToggle': 'DenoiserAfterFirstRestorerToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionAfterFirst',
             'requiredSelectionValue': "Full Restore (DDIM)",
-            'help': "Number of DDIM steps for full restoration (After First Restorer). Higher = more detail, slower."
+            'help': "完整修复的 DDIM 步数（首个修复器之后）。步数越多细节越好，但速度越慢。"
         },
         'DenoiserCFGScaleDecimalSliderAfterFirst': {
             'level': 3,
             'widget_type': 'ParameterDecimalSlider',
-            'label': 'CFG Scale (After First)',
+            'label': 'CFG 引导强度（首次修复后）',
             'control_name': 'DenoiserCFGScaleDecimalSliderAfterFirst',
             'min_value': '1.0', 'max_value': '10.0', 'default': '1.0', 'step': 0.1, 'decimals': 1,
             'parentToggle': 'DenoiserAfterFirstRestorerToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionAfterFirst',
             'requiredSelectionValue': "Full Restore (DDIM)",
-            'help': "Classifier-Free Guidance scale for DDIM (After First Restorer). Higher = stronger adherence to K/V."
+            'help': "DDIM 的无分类器引导强度（首个修复器之后）。数值越高越贴近参考 K/V。"
         },
         'DenoiserAfterRestorersToggle': {
             'level': 1,
             'widget_type': 'ToggleButton',
-            'label': 'Enable Denoiser After Restorers',
+            'label': '启用修复后去噪器',
             'control_name': 'DenoiserAfterRestorersToggle',
             'default': False,
-            'help': 'Apply the UNet Denoiser again after face restorers have been applied. Uses the same UNet model and step settings.',
+            'help': '在面部修复器之后再次应用 UNet 去噪器，使用相同的 UNet 模型与步数设置。',
             'exec_function': control_actions.handle_denoiser_state_change,
             'exec_function_args': ['DenoiserAfterFirstRestorerToggle'],
         },
         'DenoiserModeSelectionAfter': {
             'level': 2,
             'widget_type': 'SelectionBox',
-            'label': 'Denoiser Mode (After)',
+            'label': '去噪器模式（修复后）',
             'control_name': 'DenoiserModeSelectionAfter',
             'options': ["Single Step (Fast)", "Full Restore (DDIM)"],
             'default': "Single Step (Fast)",
             'parentToggle': 'DenoiserAfterRestorersToggle',
             'requiredToggleValue': True,
-            'help': 'Denoising mode for the pass after restorers. Single Step is generally faster.'
+            'help': '修复器之后阶段的去噪模式。单步模式通常更快。'
         },
         'DenoiserSingleStepTimestepSliderAfter': {
             'level': 3,
             'widget_type': 'ParameterSlider',
-            'label': 'Single Step Timestep (t) (After)',
+            'label': '单步时间步 (t)（修复后）',
             'control_name': 'DenoiserSingleStepTimestepSliderAfter',
             'min_value': '1', 'max_value': '999', 'default': '1', 'step': 1, # Max value was 200
             'parentToggle': 'DenoiserAfterRestorersToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionAfter',
             'requiredSelectionValue': "Single Step (Fast)",
-            'help': 'Timestep for single-step denoising (After Restorers). Lower values mean less noise added/removed.'
+            'help': '单步去噪的时间步（修复器之后）。数值越小，添加/去除的噪声越少。'
         },
         'DenoiserDDIMStepsSliderAfter': {
             'level': 3,
             'widget_type': 'ParameterSlider',
-            'label': 'DDIM Steps (After)',
+            'label': 'DDIM 步数（修复后）',
             'control_name': 'DenoiserDDIMStepsSliderAfter',
             'min_value': '10', 'max_value': '200', 'default': '20', 'step': 10,
             'parentToggle': 'DenoiserAfterRestorersToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionAfter',
             'requiredSelectionValue': "Full Restore (DDIM)",
-            'help': "Number of DDIM steps for full restoration (After Restorers). Higher = more detail, slower."
+            'help': "完整修复的 DDIM 步数（修复器之后）。步数越多细节越好，但速度越慢。"
         },
         'DenoiserCFGScaleDecimalSliderAfter': {
             'level': 3,
             'widget_type': 'ParameterDecimalSlider',
-            'label': 'CFG Scale (After)',
+            'label': 'CFG 引导强度（修复后）',
             'control_name': 'DenoiserCFGScaleDecimalSliderAfter',
             'min_value': '1.0', 'max_value': '10.0', 'default': '1.0', 'step': 0.1, 'decimals': 1,
             'parentToggle': 'DenoiserAfterRestorersToggle',
             'requiredToggleValue': True,
             'parentSelection': 'DenoiserModeSelectionAfter',
             'requiredSelectionValue': "Full Restore (DDIM)",
-            'help': "Classifier-Free Guidance scale for DDIM (After Restorers). Higher = stronger adherence to K/V."
+            'help': "DDIM 的无分类器引导强度（修复器之后）。数值越高越贴近参考 K/V。"
         }
     }
 }
