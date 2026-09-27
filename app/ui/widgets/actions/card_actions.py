@@ -168,26 +168,17 @@ def find_target_faces(main_window: 'MainWindow'):
                     # 动态 FOV 计算与 FrameWorker 的 VR 管线保持一致，保证 crop 同域
                     angular_width_deg = (bbox_single[2] - bbox_single[0]) / equirect_converter.width * 360.0
                     angular_height_deg = (bbox_single[3] - bbox_single[1]) / equirect_converter.height * 180.0
-                    dynamic_fov = float(numpy.clip(max(angular_width_deg, angular_height_deg) * 1.15, 15.0, 100.0))
+                    # FOV padding 1.45 + crop 640 与 FrameWorker 的 VR 管线一致：
+                    # 脸占画幅约 67%（检测高分区），kps 为 crop 原生坐标，无需换算
+                    dynamic_fov = float(numpy.clip(max(angular_width_deg, angular_height_deg) * 1.45, 15.0, 100.0))
                     face_crop_tensor = equirect_converter.get_perspective_crop(
-                        FOV=dynamic_fov, THETA=theta, PHI=phi, height=512, width=512
+                        FOV=dynamic_fov, THETA=theta, PHI=phi, height=640, width=640
                     )
                     if face_crop_tensor is not None and face_crop_tensor.numel() > 0:
-                        # 检测前把 crop 缩到画布中央（脸占比 87%→58%）：检测模型对
-                        # 特写占比打分骤降（实测同图 87%→0.38、65%→0.83），与源画质无关
-                        detect_canvas_size = 512
-                        detect_inner_size = 341
-                        detect_pad = (detect_canvas_size - detect_inner_size) // 2
-                        detect_canvas = torch.zeros((3, 512, 512), dtype=torch.uint8, device=face_crop_tensor.device)
-                        inner_crop = torch.nn.functional.interpolate(
-                            face_crop_tensor.unsqueeze(0).float(), size=(detect_inner_size, detect_inner_size),
-                            mode='bilinear', align_corners=False
-                        ).squeeze(0).byte()
-                        detect_canvas[:, detect_pad:detect_pad + detect_inner_size, detect_pad:detect_pad + detect_inner_size] = inner_crop
                         _, kps_on_crop_list, _ = main_window.models_processor.run_detect(
-                            detect_canvas, control['DetectorModelSelection'], max_num=1,
+                            face_crop_tensor, control['DetectorModelSelection'], max_num=1,
                             score=control['DetectorScoreSlider']/100.0,
-                            input_size=(512, 512),
+                            input_size=(640, 640),
                             use_landmark_detection=control['LandmarkDetectToggle'],
                             landmark_detect_mode=control['LandmarkDetectModelSelection'],
                             landmark_score=control["LandmarkDetectScoreSlider"]/100.0,
@@ -197,20 +188,19 @@ def find_target_faces(main_window: 'MainWindow'):
                         # 全景 kps → crop 坐标换算（兜底与误检校验基准，实测误差约 5px）
                         bbox_cx = (bbox_single[0] + bbox_single[2]) / 2.0
                         bbox_cy = (bbox_single[1] + bbox_single[3]) / 2.0
-                        scale_x = 512.0 * 360.0 / (equirect_converter.width * dynamic_fov)
-                        scale_y = 512.0 * 180.0 / (equirect_converter.height * dynamic_fov)
+                        scale_x = 640.0 * 360.0 / (equirect_converter.width * dynamic_fov)
+                        scale_y = 640.0 * 180.0 / (equirect_converter.height * dynamic_fov)
                         kps_proj = numpy.stack([
-                            (face_kps[:, 0] - bbox_cx) * scale_x + 256.0,
-                            (face_kps[:, 1] - bbox_cy) * scale_y + 256.0,
+                            (face_kps[:, 0] - bbox_cx) * scale_x + 320.0,
+                            (face_kps[:, 1] - bbox_cy) * scale_y + 320.0,
                         ], axis=1).astype('float32')
                         recognize_img = face_crop_tensor
                         if has_kps:
-                            # 检测在缩小画布上进行，kps 换算回 crop 坐标
-                            recognize_kps = (kps_on_crop_list[0] - detect_pad) * (512.0 / detect_inner_size)
+                            recognize_kps = kps_on_crop_list[0]
                             # 误检防御：kps 中心远离 crop 中心（脸必然居中）视为误检
                             kc_x = float(numpy.mean(recognize_kps[:, 0]))
                             kc_y = float(numpy.mean(recognize_kps[:, 1]))
-                            if abs(kc_x - 256.0) > 512.0 * 0.3 or abs(kc_y - 256.0) > 512.0 * 0.3:
+                            if abs(kc_x - 320.0) > 640.0 * 0.3 or abs(kc_y - 320.0) > 640.0 * 0.3:
                                 print(f"查找面部(VR180): crop 检测关键点位置异常，改用换算关键点（theta={theta:.1f}, phi={phi:.1f}）")
                                 recognize_kps = kps_proj
                         else:
