@@ -309,9 +309,10 @@ class RenderThread(QThread):
                 )
         parameters = self.main_window.parameters.copy()
         control = self.main_window.control.copy()
-        use_ai = (self.main_window.swapfacesButton.isChecked() or 
-                  self.main_window.editFacesButton.isChecked() or 
-                  control['FrameEnhancerEnableToggle'])
+        use_ai = (self.main_window.swapfacesButton.isChecked() or
+                  self.main_window.editFacesButton.isChecked() or
+                  control['FrameEnhancerEnableToggle'] or
+                  control.get('VR180ModeEnableToggle', False))  # VR180 模式始终处理（与 FrameWorker.run 一致）
         render_profiler.record('marker_update', time.perf_counter() - t0)
         
         return pool.submit(

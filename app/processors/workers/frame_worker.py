@@ -441,13 +441,17 @@ class FrameWorker(threading.Thread):
                 fface['kps_all'] = decision['kps_all']
             self.target_matches.append(list(decision.get('matches') or []))
 
-    def process_frame(self, control: dict): # control is passed in
+    def process_frame(self, control: dict | None = None): # run() 传入 control；RenderThread 无参调用时为 None
         from app.processors.render_profiler import render_profiler
         _t_start = time.perf_counter()
         _acc = [0.0]
         def _rec(name, dt):
             _acc[0] += dt
             render_profiler.record(name, dt)
+
+        if control is None:
+            # 离线渲染并行 worker（RenderThread）无参调用：用派发线程按帧序快照的 control
+            control = dict(self.control_override) if self.control_override is not None else self.main_window.control.copy()
 
         # Input self.frame is HxWxC RGB uint8 NumPy array
         img_numpy_rgb_uint8 = self.frame
