@@ -40,6 +40,24 @@ def fw_gamma_encode_linear_to_srgb(linear_rgb_tensor: torch.Tensor, gamma: float
 
 torchvision.disable_beta_transforms_warning()
 
+_vr_diag_counts: dict = {}
+
+
+def _vr_diag_once(tag: str, message: str, limit: int = 2):
+    """VR180 诊断输出节流：同一提示最多打印 limit 次后静默。
+
+    逐帧逐脸的同步 print 是可观的性能开销（Windows 控制台 I/O 尤其昂贵），
+    且刷屏会淹没有效信息。诊断只需告知"发生了什么"，不需要持续汇报。
+    """
+    n = _vr_diag_counts.get(tag, 0)
+    if n < limit:
+        _vr_diag_counts[tag] = n + 1
+        if n == limit - 1:
+            print(message + "（同类提示已达上限，后续静默）")
+        else:
+            print(message)
+
+
 # 全局有界pinned缓冲池：pinned内存分配较慢（cudaHostAlloc逐页锁定），
 # 按帧形状复用可避免预览场景逐帧线程创建带来的重复分配。
 # 正确性约定：缓冲仅在H2D完成的同步点（process_frame末尾.cpu()）之后归还池，
@@ -182,7 +200,7 @@ class FrameWorker(threading.Thread):
         if kps_on_crop_param is None or kps_on_crop_param.size == 0:
             # This case should ideally be handled before calling,
             # but as a safeguard, return original if no kps.
-            print(f"VR SWAP DEBUG: kps_on_crop_param was None or empty for {eye_side_for_debug}. Skipping processing for this crop.")
+            _vr_diag_once("crop_no_kps", f"VR SWAP DEBUG: kps_on_crop_param was None or empty for {eye_side_for_debug}. Skipping processing for this crop.")
 
             return processed_crop_torch_rgb_uint8
         # If the above 'if' returns, the rest of the code is effectively an 'else' block.
@@ -227,7 +245,7 @@ class FrameWorker(threading.Thread):
         if swap_button_is_checked_global and s_e_for_swap_core is None and \
            not (parameters_for_face['SwapModelSelection'] == 'DeepFaceLive (DFM)' and dfm_model_instance_local is not None) and \
            not edit_button_is_checked_global:
-            print(f"VR180: 目标卡未分配有效的输入脸，跳过换脸（eye={eye_side_for_debug}）。请把输入脸拖到该目标卡上。")
+            _vr_diag_once("no_input_face_swap", f"VR180: 目标卡未分配有效的输入脸，跳过换脸（eye={eye_side_for_debug}）。请把输入脸拖到该目标卡上。")
 
         # Call swap_core if:
         # 1. Swapping is enabled and s_e_for_swap_core is valid (or DFM is configured).
@@ -263,13 +281,13 @@ class FrameWorker(threading.Thread):
             persp_final_combined_mask_1x512x512_float_for_paste = None
             if comprehensive_mask_1x512x512_from_swap_core is None or comprehensive_mask_1x512x512_from_swap_core.numel() == 0:
                 if swap_button_is_checked_global: # Swap intended, but mask failed
-                    print(f"VR SWAP DEBUG: Mask from swap_core was None/empty for {eye_side_for_debug}. Using default open (border) mask.")
+                    _vr_diag_once("mask_empty", f"VR SWAP DEBUG: Mask from swap_core was None/empty for {eye_side_for_debug}. Using default open (border) mask.")
                     persp_final_combined_mask_1x512x512_float_for_paste = t512(self.get_border_mask(parameters_for_face)).float()
 
                 else:
                     persp_final_combined_mask_1x512x512_float_for_paste = torch.zeros((1, 512, 512), dtype=torch.float32, device=perspective_crop_torch_rgb_uint8.device)
             elif swap_button_is_checked_global and torch.all(comprehensive_mask_1x512x512_from_swap_core == 0):
-                print(f"VR SWAP DEBUG: Mask from swap_core was all zero for {eye_side_for_debug} when swap was intended. Using default open (border) mask.")
+                _vr_diag_once("mask_zero", f"VR SWAP DEBUG: Mask from swap_core was all zero for {eye_side_for_debug} when swap was intended. Using default open (border) mask.")
                 persp_final_combined_mask_1x512x512_float_for_paste = t512(self.get_border_mask(parameters_for_face)).float()
             else: 
                 persp_final_combined_mask_1x512x512_float_for_paste = comprehensive_mask_1x512x512_from_swap_core.float()
@@ -324,7 +342,7 @@ class FrameWorker(threading.Thread):
                         control_global
                     )
                 else:
-                    print(f"VR EDIT DEBUG: Could not get kps_all for editor on crop {eye_side_for_debug}. Skipping edit.")
+                    _vr_diag_once("edit_no_kps", f"VR EDIT DEBUG: Could not get kps_all for editor on crop {eye_side_for_debug}. Skipping edit.")
         
         return processed_crop_torch_rgb_uint8
 
@@ -552,7 +570,7 @@ class FrameWorker(threading.Thread):
                     height=crop_render_height, width=crop_render_width
                 )
                 if face_crop_tensor is None or face_crop_tensor.numel() == 0:
-                    print(f"VR180: 投影 crop 为空，跳过该人脸（eye={original_eye_side}, theta={theta:.1f}, phi={phi:.1f}）")
+                    _vr_diag_once("crop_empty", f"VR180: 投影 crop 为空，跳过该人脸（eye={original_eye_side}, theta={theta:.1f}, phi={phi:.1f}）")
                     continue
 
                 # 全景 kps → crop 坐标：闭式投影换算，与 crop 采样几何严格互逆
@@ -592,9 +610,9 @@ class FrameWorker(threading.Thread):
                     })
                 else: # No matching target face in UI
                     if best_sim_vr <= -1.0 and self.main_window.target_faces:
-                        print(f"VR180: 未匹配到可用目标卡（eye={original_eye_side}）：没有分配了输入脸的目标卡，请把输入脸拖到目标卡上。")
+                        _vr_diag_once("no_input_face_card", f"VR180: 未匹配到可用目标卡（eye={original_eye_side}）：没有分配了输入脸的目标卡，请把输入脸拖到目标卡上。")
                     else:
-                        print(f"VR180: 未匹配到目标人脸（eye={original_eye_side}, 该脸与目标卡的最高相似度={best_sim_vr:.1f}，未达阈值）")
+                        _vr_diag_once("sim_below_threshold", f"VR180: 未匹配到目标人脸（eye={original_eye_side}, 该脸与目标卡的最高相似度={best_sim_vr:.1f}，未达阈值）")
                     del face_crop_tensor
 
 
