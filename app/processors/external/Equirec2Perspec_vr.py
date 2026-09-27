@@ -22,12 +22,9 @@ class Equirectangular:
         self._channels, self._height, self._width = self._img_tensor_cxhxw_rgb_float.shape
     
 
-    def GetPerspective(self, FOV: float, THETA: float, PHI: float, height: int, width: int, ROLL: float = 0.0, eye_side: str = "") -> torch.Tensor:
+    def GetPerspective(self, FOV: float, THETA: float, PHI: float, height: int, width: int, ROLL: float = 0.0) -> torch.Tensor:
         #
         # THETA is left/right angle, PHI is up/down angle, ROLL is tilt angle, all in degree
-        # eye_side: 'L'/'R' for side-by-side VR180 sources. The crop sampling is clamped to
-        #           that eye's half of the equirectangular image so it never mixes in the
-        #           other eye's view (which would tear/ghost the face and break detection).
         #
         # Returns: Perspective crop as Torch tensor (C, H, W) in RGB, uint8 format, on GPU.
 
@@ -91,16 +88,6 @@ class Equirectangular:
         # Convert spherical to equirectangular pixel coordinates
         lon_px = (lon_rad / torch.pi) * equ_cx + equ_cx # Map [-pi, pi] to [0, equ_w-1]
         lat_px = (-lat_rad / (torch.pi / 2.0)) * equ_cy + equ_cy # Map [-pi/2, pi/2] to [0, equ_h-1] (lat is inverted)
-
-        # SBS VR180 素材：左右眼各占半幅。crop 采样钳制在所属眼的半幅内，
-        # 越界部分由钳制处的像素填充——避免把另一只眼的画面混进 crop
-        # （跨缝采样会得到两眼视差撕裂的重影脸，检测/识别随之失效）。
-        if eye_side:
-            half_w = equ_w // 2
-            if str(eye_side).upper().startswith('L'):
-                lon_px = lon_px.clamp(0.0, float(half_w - 1))
-            else:
-                lon_px = lon_px.clamp(float(half_w), float(equ_w - 1))
 
         # Create grid for grid_sample (expects N, H_out, W_out, 2) with (x, y) in [-1, 1]
         # Normalize pixel coordinates for grid_sample
