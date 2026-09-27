@@ -93,6 +93,26 @@ def set_up_video_seek_slider(main_window: 'MainWindow'):
                 marker_normalized_value = (value - self.minimum()) / (self.maximum() - self.minimum())
                 marker_x = groove_start + marker_normalized_value * groove_width
                 painter.drawLine(marker_x, groove_rect.top(), marker_x, groove_rect.bottom())
+        
+        # Draw render range (if set)
+        if (hasattr(main_window, 'render_start_frame') and hasattr(main_window, 'render_end_frame') and
+            main_window.render_start_frame is not None and main_window.render_end_frame is not None):
+            start_normalized = (main_window.render_start_frame - self.minimum()) / (self.maximum() - self.minimum())
+            end_normalized = (main_window.render_end_frame - self.minimum()) / (self.maximum() - self.minimum())
+            start_x = groove_start + start_normalized * groove_width
+            end_x = groove_start + end_normalized * groove_width
+            
+            # Draw render range highlight
+            painter.setPen(QtGui.QPen(QtGui.QColor("#4a90d9"), 2))
+            painter.setBrush(QtGui.QBrush(QtGui.QColor(74, 144, 217, 80)))  # Semi-transparent blue
+            painter.drawRect(QtCore.QRect(int(start_x), groove_rect.top(), int(end_x - start_x), groove_rect.height()))
+            
+            # Draw start and end markers
+            painter.setPen(QtGui.QPen(QtGui.QColor("#2ecc71"), 3))  # Green for start
+            painter.drawLine(int(start_x), groove_rect.top(), int(start_x), groove_rect.bottom())
+            
+            painter.setPen(QtGui.QPen(QtGui.QColor("#e74c3c"), 3))  # Red for end
+            painter.drawLine(int(end_x), groove_rect.top(), int(end_x), groove_rect.bottom())
 
     main_window.videoSeekSlider.add_marker_and_paint = partial(add_marker_and_paint, main_window.videoSeekSlider)
     main_window.videoSeekSlider.remove_marker_and_paint = partial(remove_marker_and_paint, main_window.videoSeekSlider)
@@ -482,3 +502,211 @@ def save_current_frame_to_file(main_window: 'MainWindow'):
 
     else:
         common_widget_actions.create_and_show_messagebox(main_window, 'Invalid Frame', 'Cannot save the current frame!', parent_widget=main_window.saveImageButton)
+
+# ==================== 渲染区间控制函数 ====================
+
+def set_render_start_point(main_window: 'MainWindow'):
+    """设置渲染区间的开始点"""
+    if main_window.selected_video_button.file_type != 'video':
+        common_widget_actions.create_and_show_messagebox(
+            main_window, '渲染功能不可用', '渲染功能仅可用于视频文件！', 
+            main_window.videoSeekSlider
+        )
+        return
+    
+    current_position = int(main_window.videoSeekSlider.value())
+    main_window.render_start_frame = current_position
+    
+    # 更新按钮文本显示帧号
+    main_window.setRenderStartButton.setText(f"开始点:{current_position}")
+    
+    # 更新进度条显示
+    main_window.videoSeekSlider.update()
+    
+    print(f"渲染开始点已设置为帧: {current_position}")
+    
+    # 如果结束点已设置且小于开始点，自动调整结束点
+    if main_window.render_end_frame is not None and main_window.render_end_frame < current_position:
+        main_window.render_end_frame = current_position
+        main_window.setRenderEndButton.setText(f"结束点:{current_position}")
+        print(f"渲染结束点已自动调整为帧: {current_position}")
+
+def set_render_end_point(main_window: 'MainWindow'):
+    """设置渲染区间的结束点"""
+    if main_window.selected_video_button.file_type != 'video':
+        common_widget_actions.create_and_show_messagebox(
+            main_window, '渲染功能不可用', '渲染功能仅可用于视频文件！', 
+            main_window.videoSeekSlider
+        )
+        return
+    
+    current_position = int(main_window.videoSeekSlider.value())
+    main_window.render_end_frame = current_position
+    
+    # 更新按钮文本显示帧号
+    main_window.setRenderEndButton.setText(f"结束点:{current_position}")
+    
+    # 更新进度条显示
+    main_window.videoSeekSlider.update()
+    
+    print(f"渲染结束点已设置为帧: {current_position}")
+    
+    # 如果开始点已设置且大于结束点，自动调整开始点
+    if main_window.render_start_frame is not None and main_window.render_start_frame > current_position:
+        main_window.render_start_frame = current_position
+        main_window.setRenderStartButton.setText(f"开始点:{current_position}")
+        print(f"渲染开始点已自动调整为帧: {current_position}")
+
+def start_render_and_save(main_window: 'MainWindow'):
+    """开始渲染并保存"""
+    # 验证视频类型
+    if main_window.selected_video_button.file_type != 'video':
+        common_widget_actions.create_and_show_messagebox(
+            main_window, '渲染功能不可用', '渲染功能仅可用于视频文件！', 
+            main_window.renderAndSaveButton
+        )
+        return
+    
+    # 验证渲染区间
+    if main_window.render_start_frame is None or main_window.render_end_frame is None:
+        common_widget_actions.create_and_show_messagebox(
+            main_window, '未设置渲染区间', '请先设置渲染的开始点和结束点！', 
+            main_window.renderAndSaveButton
+        )
+        return
+    
+    if main_window.render_start_frame >= main_window.render_end_frame:
+        common_widget_actions.create_and_show_messagebox(
+            main_window, '渲染区间无效', '开始点必须小于结束点！', 
+            main_window.renderAndSaveButton
+        )
+        return
+    
+    # 验证输出文件夹
+    if not main_window.control.get('OutputMediaFolder', '').strip():
+        common_widget_actions.create_and_show_messagebox(
+            main_window, '未选择输出文件夹', '请先选择输出文件夹以保存渲染结果！', 
+            main_window.renderAndSaveButton
+        )
+        return
+    
+    # 验证FFmpeg
+    if not misc_helpers.is_ffmpeg_in_path():
+        common_widget_actions.create_and_show_messagebox(
+            main_window, '未找到FFmpeg', '系统中未找到FFmpeg，请检查安装！', 
+            main_window.renderAndSaveButton
+        )
+        return
+    
+    # 验证目标人脸
+    if not main_window.target_faces:
+        common_widget_actions.create_and_show_messagebox(
+            main_window, '未找到目标人脸', '请先添加至少一个目标人脸！', 
+            main_window.renderAndSaveButton
+        )
+        return
+    
+    # 防止重复启动：上一渲染线程仍在收尾（取消后清理临时文件等）时不得并发，
+    # 两线程会争用同一个临时文件
+    prev_thread = getattr(main_window, 'render_thread', None)
+    if prev_thread is not None and prev_thread.isRunning():
+        common_widget_actions.create_and_show_messagebox(
+            main_window, '渲染正在进行', '上一次渲染仍在进行或收尾中，请稍候再试！', 
+            main_window.renderAndSaveButton
+        )
+        return
+    
+    # 停止当前播放
+    if main_window.video_processor.processing:
+        main_window.video_processor.stop_processing()
+    
+    # 创建并启动渲染线程
+    from app.processors.render_thread import RenderThread
+    
+    render_thread = RenderThread(
+        video_path=main_window.video_processor.media_path,
+        start_frame=main_window.render_start_frame,
+        end_frame=main_window.render_end_frame,
+        output_folder=main_window.control['OutputMediaFolder'],
+        main_window=main_window
+    )
+    # 引用挂在main_window上防止QThread运行中被GC销毁（QThread: Destroyed while running）
+    main_window.render_thread = render_thread
+    
+    # 创建模态进度条
+    progress_dialog = QtWidgets.QProgressDialog(
+        "正在渲染...", "取消", 0, 100, main_window
+    )
+    progress_dialog.setWindowTitle("视频渲染")
+    progress_dialog.setWindowModality(QtCore.Qt.WindowModality.WindowModal)
+    progress_dialog.setMinimumDuration(0)
+    # 关闭Qt自动reset/close：进度到100%或取消时Qt会reset对话框并复位内部shown_once标志，
+    # 此后残留的进度信号再调用setValue会把对话框重新弹出（"取消要点两次"的根源）。
+    # 对话框的关闭统一由on_finished/on_error/on_thread_finished显式控制。
+    progress_dialog.setAutoReset(False)
+    progress_dialog.setAutoClose(False)
+    progress_dialog.setValue(0)
+    
+    # 连接信号
+    ui_state = {'cancelled': False}
+    
+    def on_progress(percent: int, time_str: str):
+        if ui_state['cancelled']:
+            # 取消后事件队列中残留的进度信号一律忽略，防止对话框被重新弹出
+            return
+        progress_dialog.setValue(percent)
+        progress_dialog.setLabelText(f"进度: {percent}% | 剩余时间: {time_str}")
+    
+    def on_finished(output_path: str):
+        progress_dialog.close()
+        common_widget_actions.create_and_show_toast_message(
+            main_window, '渲染完成', f'视频已保存到: {output_path}'
+        )
+        # 重置渲染区间
+        reset_render_range(main_window)
+    
+    def on_error(error_msg: str):
+        progress_dialog.close()
+        common_widget_actions.create_and_show_messagebox(
+            main_window, '渲染失败', error_msg, main_window.renderAndSaveButton
+        )
+    
+    def on_cancel():
+        if ui_state['cancelled']:
+            return
+        ui_state['cancelled'] = True
+        progress_dialog.setLabelText("正在取消并清理...")
+        progress_dialog.setCancelButtonText("正在取消...")
+        render_thread.cancel()
+    
+    def on_thread_finished():
+        # 线程真正退出后解除引用，允许后续渲染
+        if getattr(main_window, 'render_thread', None) is render_thread:
+            main_window.render_thread = None
+        # 统一收尾：正常完成/出错时对话框已关，此处保证取消路径也会关闭
+        progress_dialog.close()
+    
+    render_thread.progress_signal.connect(on_progress)
+    render_thread.finished_signal.connect(on_finished)
+    render_thread.error_signal.connect(on_error)
+    render_thread.finished.connect(on_thread_finished)  # QThread内置信号：run()返回后发射
+    progress_dialog.canceled.connect(on_cancel)
+    
+    # 启动渲染线程
+    render_thread.start()
+    
+    # 显示模态进度条
+    progress_dialog.exec()
+
+def reset_render_range(main_window: 'MainWindow'):
+    """重置渲染区间"""
+    main_window.render_start_frame = None
+    main_window.render_end_frame = None
+    main_window.setRenderStartButton.setText("开始点")
+    main_window.setRenderEndButton.setText("结束点")
+    main_window.videoSeekSlider.update()
+
+def clear_render_range(main_window: 'MainWindow'):
+    """清除渲染区间"""
+    reset_render_range(main_window)
+    print("渲染区间已清除")

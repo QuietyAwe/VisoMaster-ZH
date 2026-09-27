@@ -1,4 +1,5 @@
 import traceback
+import time
 from typing import TYPE_CHECKING
 import threading
 from math import floor, ceil
@@ -11,6 +12,7 @@ import torchvision
 from torchvision import transforms
 
 import numpy as np
+import cv2
 
 from app.processors.utils import faceutil
 import app.ui.widgets.actions.common_actions as common_widget_actions
@@ -21,6 +23,38 @@ if TYPE_CHECKING:
     from app.ui.main_ui import MainWindow
 
 torchvision.disable_beta_transforms_warning()
+
+# 全局有界pinned缓冲池：pinned内存分配较慢（cudaHostAlloc逐页锁定），
+# 按帧形状复用可避免预览场景逐帧线程创建带来的重复分配。
+# 正确性约定：缓冲仅在H2D完成的同步点（process_frame末尾.cpu()）之后归还池，
+# 归还前不得被其他线程复写。异常路径下缓冲随GC回收：并发的H2D是主机侧读取，
+# 不会写坏后续帧数据，最坏仅影响已被丢弃的失败帧。
+_pinned_pool_lock = threading.Lock()
+_pinned_pool: dict = {}
+_PINNED_POOL_MAX_PER_SHAPE = 4
+
+
+def _acquire_pinned_buffer(shape: tuple) -> torch.Tensor | None:
+    """从池中取一个 pinned uint8 缓冲（C连续）；池空则新分配，失败返回None。"""
+    key = tuple(int(s) for s in shape)
+    with _pinned_pool_lock:
+        bufs = _pinned_pool.get(key)
+        if bufs:
+            return bufs.pop()
+    try:
+        return torch.empty(key, dtype=torch.uint8, pin_memory=True)
+    except RuntimeError:
+        return None
+
+
+def _release_pinned_buffer(buf: torch.Tensor):
+    """归还缓冲（仅可在H2D完成后调用）；池满则交由GC回收。"""
+    key = tuple(int(s) for s in buf.shape)
+    with _pinned_pool_lock:
+        bufs = _pinned_pool.setdefault(key, [])
+        if len(bufs) < _PINNED_POOL_MAX_PER_SHAPE:
+            bufs.append(buf)
+
 
 class FrameWorker(threading.Thread):
     def __init__(self, frame, main_window: 'MainWindow', frame_number, frame_queue, is_single_frame=False):
@@ -44,12 +78,18 @@ class FrameWorker(threading.Thread):
         # For every detected face: the ordered list of (target_face_id, similarity)
         # that this frame should apply.
         self.target_matches: list = []
+        # 本次装载从pinned池借出的缓冲，在H2D同步点（process_frame末尾.cpu()）归还
+        self._pinned_buf: torch.Tensor | None = None
+        # 外部传入的control快照（离线渲染并行worker使用）；为None时实时读主窗口（预览路径原语义）
+        self.control_override: dict | None = None
 
     def run(self):
         try:
             # Update parameters from markers (if exists) without concurrent access from other threads
-            with self.main_window.models_processor.model_lock:
-                video_control_actions.update_parameters_and_control_from_marker(self.main_window, self.frame_number)
+            # markers为空时短路：绝大多数渲染帧无标记，省去逐帧model_lock加锁开销
+            if self.main_window.markers:
+                with self.main_window.models_processor.model_lock:
+                    video_control_actions.update_parameters_and_control_from_marker(self.main_window, self.frame_number)
             self.parameters = self.main_window.parameters.copy()
             # Check if view mask or face compare checkboxes are checked
             self.is_view_face_compare = self.main_window.faceCompareCheckBox.isChecked() 
@@ -61,7 +101,8 @@ class FrameWorker(threading.Thread):
                 self.frame = self.process_frame()
             else:
                 # Img must be in BGR format
-                self.frame = self.frame[..., ::-1]  # Swap the channels from RGB to BGR
+                # cv2转换输出C连续（[...,::-1]负步长视图会让ascontiguousarray退化为逐字节拷贝，实测慢20倍）
+                self.frame = cv2.cvtColor(self.frame, cv2.COLOR_RGB2BGR)
             self.frame = np.ascontiguousarray(self.frame)
 
             # Display the frame if processing is still active
@@ -95,9 +136,42 @@ class FrameWorker(threading.Thread):
     
     # @misc_helpers.benchmark
     def process_frame(self):
-        # Load frame into VRAM
-        img = torch.from_numpy(self.frame.astype('uint8')).to(self.models_processor.device) #HxWxc
+        from app.processors.render_profiler import render_profiler
+        _t_start = time.perf_counter()
+        _acc = [0.0]
+        def _rec(name, dt):
+            _acc[0] += dt
+            render_profiler.record(name, dt)
+        
+        # Load frame into VRAM（仅在dtype或内存布局不符时才拷贝，避免无谓复制）
+        _t0 = time.perf_counter()
+        frame = self.frame
+        if frame.dtype != np.uint8 or not frame.flags['C_CONTIGUOUS']:
+            frame = np.ascontiguousarray(frame, dtype=np.uint8)
+        if torch.device(self.models_processor.device).type != 'cuda':
+            # CPU及其他后端：保持原有同步装载语义（pinned分配依赖CUDA运行时）
+            img = torch.from_numpy(frame)
+            if torch.device(self.models_processor.device).type == 'cpu':
+                img = img.clone()  # CPU后端下后续算子会原地写入，必须与源数组断开共享
+            img = img.to(self.models_processor.device) #HxWxc
+        else:
+            # pinned缓冲承接帧数据（单次拷贝），随后异步DMA传输到显存，
+            # 传输与后续CPU侧准备/核函数发射重叠，替代逐帧pageable同步拷贝。
+            # 复用安全：缓冲在本函数末尾.cpu()同步点之后才归还池，
+            # 归还时上一次H2D必然完成，不会被其他线程复写。
+            if self._pinned_buf is not None:
+                # 上次调用中途异常未归还（如推理出错），此处补归还避免池流失
+                _release_pinned_buffer(self._pinned_buf)
+                self._pinned_buf = None
+            pinned_buf = _acquire_pinned_buffer(frame.shape)
+            if pinned_buf is not None:
+                pinned_buf.copy_(torch.from_numpy(frame))
+                img = pinned_buf.to(self.models_processor.device, non_blocking=True) #HxWxc
+                self._pinned_buf = pinned_buf
+            else:
+                img = torch.from_numpy(frame).to(self.models_processor.device) #HxWxc
         img = img.permute(2,0,1)#cxHxW
+        _rec('load_to_vram', time.perf_counter() - _t0)
 
         #Scale up frame if it is smaller than 512
         img_x = img.size()[2]
@@ -131,7 +205,8 @@ class FrameWorker(threading.Thread):
 
             # det_scale = torch.div(new_height, img_y)
 
-        control = self.main_window.control.copy()
+        # 并行渲染时使用派发线程按帧序快照的control，避免worker间通过共享control互相污染
+        control = self.control_override if self.control_override is not None else self.main_window.control.copy()
         # Rotate the frame
         if control['ManualRotationEnableToggle']:
             img = v2.functional.rotate(img, angle=control['ManualRotationAngleSlider'], interpolation=v2.InterpolationMode.BILINEAR, expand=True)
@@ -148,15 +223,19 @@ class FrameWorker(threading.Thread):
             # force to use from_points in landmark detector when edit face is enabled.
             from_points = True
 
+        _t0 = time.perf_counter()
         bboxes, kpss_5, kpss = self.models_processor.run_detect(img, control['DetectorModelSelection'], max_num=control['MaxFacesToDetectSlider'], score=control['DetectorScoreSlider']/100.0, input_size=(512, 512), use_landmark_detection=use_landmark_detection, landmark_detect_mode=landmark_detect_mode, landmark_score=control["LandmarkDetectScoreSlider"]/100.0, from_points=from_points, rotation_angles=[0] if not control["AutoRotationToggle"] else [0, 90, 180, 270])
+        _rec('detect', time.perf_counter() - _t0)
         
         det_faces_data = []
         if len(kpss_5)>0:
+            _t0 = time.perf_counter()
             for i in range(kpss_5.shape[0]):
                 face_kps_5 = kpss_5[i]
                 face_kps_all = kpss[i]
                 face_emb, _ = self.models_processor.run_recognize_direct(img, face_kps_5, control['SimilarityTypeSelection'], control['RecognitionModelSelection'])
                 det_faces_data.append({'kps_5': face_kps_5, 'kps_all': face_kps_all, 'embedding': face_emb, 'bbox': bboxes[i]})
+            _rec('recognize', time.perf_counter() - _t0)
 
         compare_mode = self.is_view_face_mask or self.is_view_face_compare
 
@@ -189,10 +268,14 @@ class FrameWorker(threading.Thread):
 
                         # swap_core function is executed even if 'Swap Faces' button is disabled,
                         # because it also returns the original face and face mask 
+                        _t0 = time.perf_counter()
                         img, fface['original_face'], fface['swap_mask'] = self.swap_core(img, fface['kps_5'], s_e=s_e, t_e=target_face.get_embedding(arcface_model), parameters=parameters, control=control, dfm_model=dfm_model)
+                        _rec('swap', time.perf_counter() - _t0)
                                 # cv2.imwrite('temp_swap_face.png', swapped_face.permute(1,2,0).cpu().numpy())
                         if self.main_window.editFacesButton.isChecked():
+                            _t0 = time.perf_counter()
                             img = self.swap_edit_face_core(img, fface['kps_all'], parameters, control)
+                            _rec('edit_face', time.perf_counter() - _t0)
 
         if control['ManualRotationEnableToggle']:
             img = v2.functional.rotate(img, angle=-control['ManualRotationAngleSlider'], interpolation=v2.InterpolationMode.BILINEAR, expand=True)
@@ -209,12 +292,23 @@ class FrameWorker(threading.Thread):
             img = self.get_compare_faces_image(img, det_faces_data, control)
 
         if control['FrameEnhancerEnableToggle'] and not compare_mode:
+            _t0 = time.perf_counter()
             img = self.enhance_core(img, control=control)
+            _rec('enhance', time.perf_counter() - _t0)
 
-        img = img.permute(1,2,0)
+        _t0 = time.perf_counter()
+        # RGB→BGR翻转在GPU侧完成并连续化后再回传：
+        # 若返回numpy负步长视图（img[..., ::-1]），下游tobytes()会退化为逐字节收集（实测慢20倍），
+        # 且长时间持GIL拖慢其他线程的CPU拷贝。GPU侧翻转仅约0.6ms(1080p)。
+        img = img.flip(0).permute(1,2,0).contiguous()
         img = img.cpu().numpy()
-        # RGB to BGR
-        return img[..., ::-1]
+        _rec('to_numpy', time.perf_counter() - _t0)
+        # .cpu()是同步点：此前的非阻塞H2D必然完成，pinned缓冲可安全归还复用
+        if self._pinned_buf is not None:
+            _release_pinned_buffer(self._pinned_buf)
+            self._pinned_buf = None
+        render_profiler.record('other_ai', time.perf_counter() - _t_start - _acc[0])
+        return img  # C连续BGR (H,W,3)
 
     def get_parameter(self, face_id, key: str, default):
         """Read a per target face parameter, falling back to the default value."""

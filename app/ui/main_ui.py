@@ -49,8 +49,7 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.input_faces: Dict[int, widget_components.InputFaceCardButton] = {} #Contains button objects of source faces (images)
         self.merged_embeddings: Dict[int, widget_components.EmbeddingCardButton] = {}
         self.cur_selected_target_face_button: widget_components.TargetFaceCardButton = False
-        # Input face whose target faces stay highlighted (clicked) / are previewed (hovered)
-        self.highlighted_input_face_id = None
+        # Input face whose target faces are previewed with the white ring while hovered
         self.hovered_input_face_id = None
         self.selected_video_button: widget_components.TargetMediaCardButton = False
         self.selected_target_face_id = False
@@ -84,6 +83,10 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.dfm_models_data = DFM_MODELS_DATA
         # This flag is used to make sure new loaded media is properly fit into the graphics frame on the first load
         self.loading_new_media = False
+        
+        # 渲染区间状态
+        self.render_start_frame = None
+        self.render_end_frame = None
 
         self.gpu_memory_update_signal.connect(partial(common_widget_actions.set_gpu_memory_progressbar_value, self))
         self.placeholder_update_signal.connect(partial(common_widget_actions.update_placeholder_visibility, self))
@@ -147,6 +150,11 @@ class MainWindow(QtWidgets.QMainWindow, Ui_MainWindow):
         self.previousMarkerButton.clicked.connect(partial(video_control_actions.move_slider_to_previous_nearest_marker, self))
 
         self.viewFullScreenButton.clicked.connect(partial(video_control_actions.view_fullscreen, self))
+        
+        # 渲染区间控制按钮
+        self.setRenderStartButton.clicked.connect(partial(video_control_actions.set_render_start_point, self))
+        self.setRenderEndButton.clicked.connect(partial(video_control_actions.set_render_end_point, self))
+        self.renderAndSaveButton.clicked.connect(partial(video_control_actions.start_render_and_save, self))
         # Set up videoSeekLineEdit and add the event filter to handle changes
         video_control_actions.set_up_video_seek_line_edit(self)
         video_seek_line_edit_event_filter = videoSeekSliderLineEditEventFilter(self, self.videoSeekLineEdit)

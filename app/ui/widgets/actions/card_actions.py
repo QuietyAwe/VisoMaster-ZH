@@ -75,15 +75,14 @@ def refresh_target_face_colors(main_window: 'MainWindow'):
         target_face.set_color(colors[index % len(colors)])
 
 def refresh_target_face_highlights(main_window: 'MainWindow'):
-    """Highlight the target faces that use the input face being hovered / clicked.
+    """Highlight the target faces that use the input face under the mouse cursor.
 
-    Hovering wins over the clicked one, so moving the mouse over another input
-    face previews its target faces and moving away restores the clicked state.
+    The white ring is a hover preview only: it disappears as soon as the pointer
+    leaves the input face (or the card is hidden or removed).
     """
     if not main_window.target_faces:
         return
-    face_id = (getattr(main_window, 'hovered_input_face_id', None)
-               or getattr(main_window, 'highlighted_input_face_id', None))
+    face_id = getattr(main_window, 'hovered_input_face_id', None)
     for target_face in main_window.target_faces.values():
         target_face.set_highlighted(bool(face_id) and face_id in target_face.assigned_input_faces)
 
