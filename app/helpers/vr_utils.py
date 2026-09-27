@@ -43,12 +43,13 @@ class EquirectangularConverter:
 
         return theta, phi
 
-    def get_perspective_crop(self, FOV: float, THETA: float, PHI: float, height: int, width: int) -> torch.Tensor:
+    def get_perspective_crop(self, FOV: float, THETA: float, PHI: float, height: int, width: int, eye_side: str = "") -> torch.Tensor:
         """
         Returns a perspective crop as a Torch tensor (C, H, W) in RGB, uint8 format, on GPU.
+        eye_side: 'L'/'R' 钳制采样到对应眼的半幅（SBS VR180 素材防跨眼混合）。
         """
         # E2P_Equirectangular.GetPerspective now returns a Torch tensor (CHW, RGB, uint8)
-        persp_torch_cxhxw_rgb_uint8 = self.e2p_instance.GetPerspective(FOV, THETA, PHI, height, width)
+        persp_torch_cxhxw_rgb_uint8 = self.e2p_instance.GetPerspective(FOV, THETA, PHI, height, width, eye_side=eye_side)
         return persp_torch_cxhxw_rgb_uint8
 
 

@@ -528,7 +528,8 @@ class FrameWorker(threading.Thread):
 
                 face_crop_tensor = equirect_converter.get_perspective_crop(
                     FOV=dynamic_fov_for_crop, THETA=theta, PHI=phi,
-                    height=crop_render_height, width=crop_render_width
+                    height=crop_render_height, width=crop_render_width,
+                    eye_side=original_eye_side  # 钳制采样到本眼半幅，防跨眼混合
                 )
                 if face_crop_tensor is None or face_crop_tensor.numel() == 0:
                     print(f"VR180: 投影 crop 为空，跳过该人脸（eye={original_eye_side}, theta={theta:.1f}, phi={phi:.1f}）")

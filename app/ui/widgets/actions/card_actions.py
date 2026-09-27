@@ -169,8 +169,11 @@ def find_target_faces(main_window: 'MainWindow'):
                     angular_width_deg = (bbox_single[2] - bbox_single[0]) / equirect_converter.width * 360.0
                     angular_height_deg = (bbox_single[3] - bbox_single[1]) / equirect_converter.height * 180.0
                     dynamic_fov = float(numpy.clip(max(angular_width_deg, angular_height_deg) * 1.15, 15.0, 100.0))
+                    # 眼别判定与 FrameWorker 的 VR 管线一致；采样钳制到本眼半幅，防跨眼混合
+                    eye_side = "L" if (bbox_single[0] + bbox_single[2]) / 2 < equirect_converter.width / 2 else "R"
                     face_crop_tensor = equirect_converter.get_perspective_crop(
-                        FOV=dynamic_fov, THETA=theta, PHI=phi, height=512, width=512
+                        FOV=dynamic_fov, THETA=theta, PHI=phi, height=512, width=512,
+                        eye_side=eye_side
                     )
                     if face_crop_tensor is not None and face_crop_tensor.numel() > 0:
                         _, kps_on_crop_list, _ = main_window.models_processor.run_detect(
