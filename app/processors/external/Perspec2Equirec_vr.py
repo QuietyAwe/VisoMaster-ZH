@@ -147,8 +147,11 @@ class Perspective:
 
         # Sample from the perspective image
         # self._img_tensor_cxhxw_rgb_float is (C, H_persp, W_persp)
+        # padding_mode='border'：FOV 外采样点取 crop 边界像素外延。若用 'zeros'，
+        # mask 边界内侧的双线性插值会把黑色采进来，缝合后沿 crop 方形投影边界
+        # 形成一圈"方形黑边"（比检测框大、套住整头）。
         equirect_component_float = F.grid_sample(self._img_tensor_cxhxw_rgb_float.unsqueeze(0), grid,
-                                                 mode='bilinear', padding_mode='zeros', align_corners=True)
+                                                 mode='bilinear', padding_mode='border', align_corners=True)
         
         equirect_component_uint8 = (torch.clamp(equirect_component_float.squeeze(0) * 255.0, 0, 255)).byte()
         
