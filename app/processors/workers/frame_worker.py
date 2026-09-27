@@ -642,21 +642,9 @@ class FrameWorker(threading.Thread):
                 )
             
             processed_tensor_rgb_uint8 = final_equirect_torch_cxhxw_rgb_uint8
+            # 局部显存变量随作用域自动回收；不逐帧 torch.cuda.empty_cache()——
+            # 它会强制同步并摧毁分配器缓存池（见 video_processor 中的同名说明）。
 
-
-            # GPU Memory Cleanup for VR path
-            if 'equirect_converter' in locals(): 
-                for key in list(processed_perspective_crops_details.keys()): # Iterate over a copy of keys
-                    if 'tensor_rgb_uint8' in processed_perspective_crops_details[key]:
-                        del processed_perspective_crops_details[key]['tensor_rgb_uint8'] # Delete the tensor
-                    # del processed_perspective_crops_details[key] # Deleting the inner dict entry                
-                del equirect_converter
-            if 'p2e_converter' in locals(): del p2e_converter
-            if 'original_equirect_tensor_for_vr' in locals(): del original_equirect_tensor_for_vr
-            if 'processed_perspective_crops_details' in locals(): del processed_perspective_crops_details
-            del analyzed_faces_for_vr # Clean up list
-            torch.cuda.empty_cache() # Attempt to free memory
-            
         else:
             # === Standard Path (adapting frame_worker-orig.py) ===
             # processed_tensor_rgb_uint8 is already the initial frame tensor (CxHxW RGB uint8)
