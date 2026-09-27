@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (QApplication, QCheckBox, QDockWidget, QGraphicsVi
     QMainWindow, QMenu, QMenuBar, QProgressBar,
     QPushButton, QSizePolicy, QSlider, QSpacerItem,
     QTabWidget, QVBoxLayout, QWidget)
-import media_rc
+from app.ui.core import media_rc
 
 class Ui_MainWindow(object):
     def setupUi(self, MainWindow):
@@ -284,9 +284,9 @@ class Ui_MainWindow(object):
 
         self.horizontalLayoutMediaButtons.addWidget(self.viewFullScreenButton)
 
-        self.horizontalSpacer_71 = QSpacerItem(20, 20, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
+        self.horizontalSpacer_72 = QSpacerItem(20, 20, QSizePolicy.Policy.Fixed, QSizePolicy.Policy.Minimum)
 
-        self.horizontalLayoutMediaButtons.addItem(self.horizontalSpacer_71)
+        self.horizontalLayoutMediaButtons.addItem(self.horizontalSpacer_72)
 
         self.setRenderStartButton = QPushButton(self.mediaLayout)
         self.setRenderStartButton.setObjectName(u"setRenderStartButton")
