@@ -138,7 +138,9 @@ def find_target_faces(main_window: 'MainWindow'):
 
         if frame is not None:
         # Frame must be in RGB format
-            frame = frame[..., ::-1]  # Swap the channels from BGR to RGB
+            # Swap the channels from BGR to RGB（转为连续数组：[...,::-1] 是负步长视图，
+            # torch.from_numpy 不支持，且下游投影转换器直接消费该数组）
+            frame = numpy.ascontiguousarray(frame[..., ::-1])
 
             # print(frame)
             img = torch.from_numpy(frame.astype('uint8')).to(main_window.models_processor.device)

@@ -25,8 +25,9 @@ class EquirectangularConverter:
 
         self.device = device
         # Convert NumPy HWC RGB to Torch CHW RGB tensor on GPU
+        # ascontiguousarray 防御负步长视图（如 frame[..., ::-1]），torch.from_numpy 不支持
         self.equirect_tensor_cxhxw_rgb_uint8 = torch.from_numpy(
-            equirect_image_data_rgb_uint8
+            np.ascontiguousarray(equirect_image_data_rgb_uint8)
         ).permute(2,0,1).to(self.device)
         
         self.channels, self.height, self.width = self.equirect_tensor_cxhxw_rgb_uint8.shape
@@ -61,8 +62,9 @@ class PerspectiveConverter:
 
         self.device = device
         # Convert NumPy HWC RGB to Torch CHW RGB tensor on GPU
+        # ascontiguousarray 防御负步长视图（如 frame[..., ::-1]），torch.from_numpy 不支持
         self.base_equirect_tensor_cxhxw_rgb_uint8 = torch.from_numpy(
-            base_equirect_image_data_rgb_uint8
+            np.ascontiguousarray(base_equirect_image_data_rgb_uint8)
         ).permute(2,0,1).to(self.device)
         self.orig_channels, self.orig_height, self.orig_width = self.base_equirect_tensor_cxhxw_rgb_uint8.shape
         self.sobel_x_kernel, self.sobel_y_kernel = _get_sobel_kernels(self.device)
