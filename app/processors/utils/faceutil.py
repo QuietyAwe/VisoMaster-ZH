@@ -9,7 +9,8 @@ import torch
 import torchvision
 from torchvision.transforms import v2
 
-import kornia.geometry.transform as kgm
+# kornia 导入开销较大（约 2s）且只被 transform_img_kgm 使用，
+# 改为在该函数内惰性导入，避免拖慢启动。
 
 torchvision.disable_beta_transforms_warning()
 
@@ -1552,6 +1553,9 @@ def transform_img_kgm(img, M, dsize, mode='bilinear', padding_mode='zeros', alig
 
         # Prepare the transformation matrix
     M = M[:2, :]  # Ensure it's a 2x3 matrix
+
+    # kornia 惰性导入：启动时不加载，首次调用本函数时才付出导入开销
+    import kornia.geometry.transform as kgm
 
     img_transformed = kgm.warp_affine(src=img.unsqueeze(0), M=M[None], dsize=(_dsize[0], _dsize[1]), mode=mode, padding_mode=padding_mode, align_corners=align_corners, fill_value=fill_value)
     img_transformed = img_transformed.squeeze(0)

@@ -107,6 +107,11 @@ class FrameWorker(threading.Thread):
         # 画布缩放与坐标换算；脸的绝对像素（约 427px）与旧 512/1.15 方案基本持平。
         self.VR_PERSPECTIVE_RENDER_SIZE = 640 # Pixels, for rendering perspective crops
         self.VR_DYNAMIC_FOV_PADDING_FACTOR = 1.45 # Padding factor for dynamic FOV calculation
+        # 改动掩膜在 crop 边缘的衰减带宽 = crop 宽度 * 该比例。换脸区域经模板变换后
+        # 可能超出 crop 边界，此时 crop 最边缘的几列/行会保留换脸输出最边缘的暗像素
+        # （实测右缘 -68 级、顶缘 -46 级），反投影到全景后成为竖向/横向暗线。
+        # 让掩膜在边缘处衰减到 0，把这些像素交给原图即可消除。
+        self.VR_CHANGE_MASK_EDGE_FADE_RATIO = 0.04
         self.is_view_face_compare: bool = False
         self.is_view_face_mask: bool = False
         # Monotonic sequence number, assigned by VideoProcessor when the worker is
@@ -202,14 +207,15 @@ class FrameWorker(threading.Thread):
             # but as a safeguard, return original if no kps.
             _vr_diag_once("crop_no_kps", f"VR SWAP DEBUG: kps_on_crop_param was None or empty for {eye_side_for_debug}. Skipping processing for this crop.")
 
-            return processed_crop_torch_rgb_uint8
+            # crop 未被改动：返回 None 掩膜，调用方据此跳过缝合
+            return processed_crop_torch_rgb_uint8, None
         # If the above 'if' returns, the rest of the code is effectively an 'else' block.
 
         face_kps_5_on_crop_to_use = kps_on_crop_param # Use the provided keypoints
 
         # Only proceed with swapping/editing logic if swap or edit is enabled
         if not (swap_button_is_checked_global or edit_button_is_checked_global):
-            return processed_crop_torch_rgb_uint8 # Return original crop if no swap/edit
+            return processed_crop_torch_rgb_uint8, None # Return original crop if no swap/edit
 
         # Get source embedding (s_e) for swapping
         arcface_model_for_swap = self.models_processor.get_arcface_model(parameters_for_face['SwapModelSelection'])
@@ -301,10 +307,13 @@ class FrameWorker(threading.Thread):
                 tform_persp_to_512template, crop_h, crop_w, 512, 512, perspective_crop_torch_rgb_uint8.device
             )
 
+            # padding_mode 与下面的掩膜保持一致用 zeros：此前用 'border' 会把 512 边缘像素
+            # 外溢到模板之外，而掩膜在模板外是 0，于是这部分被白白"加"到原 crop 上
+            # （实测掩膜外被提亮 3~5 级）。
             pasted_face_on_persp_float = torch.nn.functional.grid_sample(
                 masked_swapped_face_to_paste_float.unsqueeze(0),
                 source_grid_normalized_xy_persp,
-                mode='bilinear', padding_mode='border', align_corners=False
+                mode='bilinear', padding_mode='zeros', align_corners=False
             ).squeeze(0)
 
             transformed_mask_on_persp_float = torch.nn.functional.grid_sample(
@@ -315,7 +324,8 @@ class FrameWorker(threading.Thread):
 
             original_persp_crop_float = perspective_crop_torch_rgb_uint8.float()
             blended_persp_crop_float = pasted_face_on_persp_float + original_persp_crop_float * (1.0 - transformed_mask_on_persp_float)
-            processed_crop_torch_rgb_uint8 = torch.clamp(blended_persp_crop_float, 0, 255).byte()
+            # VR crop 合成：round 而非截断，避免给往返链再添一次系统性压暗
+            processed_crop_torch_rgb_uint8 = torch.clamp(blended_persp_crop_float, 0, 255).round().byte()
             
             # --- Face Editor for VR Crop ---
             if edit_button_is_checked_global:
@@ -343,8 +353,24 @@ class FrameWorker(threading.Thread):
                     )
                 else:
                     _vr_diag_once("edit_no_kps", f"VR EDIT DEBUG: Could not get kps_all for editor on crop {eye_side_for_debug}. Skipping edit.")
-        
-        return processed_crop_torch_rgb_uint8
+
+        # crop 上"真正被改动"的区域（换脸掩膜），供缝合时只替换该区域；
+        # Face Editor 会改动整张 crop、没有局部掩膜，此时回退整块替换。
+        change_mask_1xhxw = transformed_mask_on_persp_float[0:1].clamp(0.0, 1.0)
+        if edit_button_is_checked_global:
+            # Face Editor 会改动整张 crop，没有局部掩膜，整块替换
+            change_mask_1xhxw = torch.ones_like(change_mask_1xhxw)
+
+        # crop 边缘衰减（对换脸与编辑两条路径都生效）：见常量注释
+        edge_px = max(1, int(round(change_mask_1xhxw.shape[-1] * self.VR_CHANGE_MASK_EDGE_FADE_RATIO)))
+        _h, _w = change_mask_1xhxw.shape[-2:]
+        _idx_x = torch.arange(_w, device=change_mask_1xhxw.device, dtype=torch.float32)
+        _idx_y = torch.arange(_h, device=change_mask_1xhxw.device, dtype=torch.float32)
+        _ramp_x = torch.clamp(torch.minimum(_idx_x, (_w - 1) - _idx_x) / edge_px, 0.0, 1.0)
+        _ramp_y = torch.clamp(torch.minimum(_idx_y, (_h - 1) - _idx_y) / edge_px, 0.0, 1.0)
+        change_mask_1xhxw = change_mask_1xhxw * (_ramp_y[None, :, None] * _ramp_x[None, None, :])
+
+        return processed_crop_torch_rgb_uint8, change_mask_1xhxw
 
     def _find_best_target_match(self, detected_embedding_np, control_global, require_input_embedding: bool = False):
         best_target_button = None
@@ -638,8 +664,9 @@ class FrameWorker(threading.Thread):
             _t0 = time.perf_counter()
             for item_data in analyzed_faces_for_vr:
                 processed_crop_for_stitching = item_data['face_crop_tensor'] # Default to original crop
+                crop_change_mask = None # None = crop 未被改动，缝合时跳过
                 if swap_button_is_checked_global or edit_button_is_checked_global: # Only process if swap/edit is on
-                    processed_crop_for_stitching = self._process_single_vr_perspective_crop_multi(
+                    processed_crop_for_stitching, crop_change_mask = self._process_single_vr_perspective_crop_multi(
                         item_data['face_crop_tensor'],
                         item_data['target_button'],
                         item_data['params'],
@@ -653,6 +680,7 @@ class FrameWorker(threading.Thread):
                 current_crop_key = f"{item_data['original_eye_side']}_{item_data['theta']}_{item_data['phi']}" # More unique key                
                 processed_perspective_crops_details[current_crop_key] = { # Corrected key
                     'tensor_rgb_uint8': processed_crop_for_stitching, # Corrected value: use the (potentially) processed crop
+                    'change_mask_1xhxw': crop_change_mask, # 只替换该掩膜覆盖的区域；None 表示跳过缝合
                     'theta': item_data['theta'],
                     'phi': item_data['phi'],
                     # 'original_eye_side': item_data['original_eye_side'], # For debug
@@ -675,16 +703,22 @@ class FrameWorker(threading.Thread):
             if swap_button_is_checked_global or edit_button_is_checked_global:
                 _t0 = time.perf_counter()
                 for eye_side, data in processed_perspective_crops_details.items():
+                    change_mask = data.get('change_mask_1xhxw')
+                    if change_mask is None:
+                        # crop 未被改动（如无关键点），贴回只是 identity 空转，跳过
+                        continue
                     # data['tensor_rgb_uint8'] is already CHW RGB uint8 Torch tensor on GPU
                     p2e_converter.stitch_single_perspective(
                         target_equirect_torch_cxhxw_rgb_uint8=final_equirect_torch_cxhxw_rgb_uint8, # Modified in-place
                         processed_crop_torch_cxhxw_rgb_uint8=data['tensor_rgb_uint8'],
                         theta=data['theta'], phi=data['phi'], fov=data['fov_used_for_crop'], # Use stored dynamic FOV
-                        is_left_eye=("L" in eye_side.split('_')[0]) # Correctly use eye_side (key of the loop)
+                        is_left_eye=("L" in eye_side.split('_')[0]), # Correctly use eye_side (key of the loop)
+                        crop_mask_1xhxw_float=change_mask
                     )
                 _rec('stitch', time.perf_counter() - _t0)
 
             processed_tensor_rgb_uint8 = final_equirect_torch_cxhxw_rgb_uint8
+
             # 局部显存变量随作用域自动回收；不逐帧 torch.cuda.empty_cache()——
             # 它会强制同步并摧毁分配器缓存池（见 video_processor 中的同名说明）。
 

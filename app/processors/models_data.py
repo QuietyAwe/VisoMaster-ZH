@@ -3,42 +3,55 @@ from pathlib import Path
 models_dir = str(Path(__file__).resolve().parent.parent.parent / 'model_assets') # More robust path
 assets_repo = "https://github.com/visomaster/visomaster-assets/releases/download"
 
-try:
-    import tensorrt as trt
-    models_trt_list = [
-        {
-            'model_name': 'LivePortraitMotionExtractor', 
-            'local_path': f'{models_dir}/liveportrait_onnx/motion_extractor.' + trt.__version__ + '.trt', 
-            'hash': '8cab6d8fe093a07ee59e14bf83b9fbc90732ce7a6c1732b88b59f4457bea6204'
-        },
-        {
-            'model_name': 'LivePortraitAppearanceFeatureExtractor', 
-            'local_path': f'{models_dir}/liveportrait_onnx/appearance_feature_extractor.' + trt.__version__ + '.trt', 
-            'hash': '7fea0c28948a5f0d21ae0712301084a0b4a0b1fdef48983840d58d8711da90af'
-        },
-        {
-            'model_name': 'LivePortraitStitchingEye', 
-            'local_path': f'{models_dir}/liveportrait_onnx/stitching_eye.' + trt.__version__ + '.trt', 
-            'hash': '266afbccd79f2f5ae277242b19dd9299815b24dc453b22f6fd79fbf8f3a1e593'
-        },
-        {
-            'model_name': 'LivePortraitStitchingLip', 
-            'local_path': f'{models_dir}/liveportrait_onnx/stitching_lip.' + trt.__version__ + '.trt', 
-            'hash': '2ac2e57eb2edd5aec70dc45023113e2ccc0495a16579c6c5d56fa30b74edc4f5'
-        },
-        {
-            'model_name': 'LivePortraitStitching', 
-            'local_path': f'{models_dir}/liveportrait_onnx/stitching.' + trt.__version__ + '.trt', 
-            'hash': '8448de922a824b7b11eb7f470805ec22cf4ee541f7d66afeb2965094f96fd3ab'
-        },
-        {
-            'model_name': 'LivePortraitWarpingSpadeFix', 
-            'local_path': f'{models_dir}/liveportrait_onnx/warping_spade-fix.' + trt.__version__ + '.trt', 
-            'hash': '24acdb6379b28fbefefb6339b3605693e00f1703c21ea5b8fec0215e521f6912'
-        }
-    ]
-except ModuleNotFoundError:
-    models_trt_list = []
+# TensorRT 相关模型列表采用惰性构建：只有在真正需要 TensorRT 引擎时才 import tensorrt
+# （顶层 import tensorrt 会给启动增加约 8 秒，而绝大多数流程并不需要它）。
+_models_trt_list_cache: list|None = None
+
+def get_models_trt_list():
+    """返回 TensorRT 模型列表；首次调用时才会 import tensorrt 并缓存结果。
+
+    tensorrt 不可用时返回空列表，行为与旧版 `models_trt_list` 一致。
+    """
+    global _models_trt_list_cache
+    if _models_trt_list_cache is None:
+        try:
+            import tensorrt as trt
+            _models_trt_list_cache = [
+                {
+                    'model_name': 'LivePortraitMotionExtractor', 
+                    'local_path': f'{models_dir}/liveportrait_onnx/motion_extractor.' + trt.__version__ + '.trt', 
+                    'hash': '8cab6d8fe093a07ee59e14bf83b9fbc90732ce7a6c1732b88b59f4457bea6204'
+                },
+                {
+                    'model_name': 'LivePortraitAppearanceFeatureExtractor', 
+                    'local_path': f'{models_dir}/liveportrait_onnx/appearance_feature_extractor.' + trt.__version__ + '.trt', 
+                    'hash': '7fea0c28948a5f0d21ae0712301084a0b4a0b1fdef48983840d58d8711da90af'
+                },
+                {
+                    'model_name': 'LivePortraitStitchingEye', 
+                    'local_path': f'{models_dir}/liveportrait_onnx/stitching_eye.' + trt.__version__ + '.trt', 
+                    'hash': '266afbccd79f2f5ae277242b19dd9299815b24dc453b22f6fd79fbf8f3a1e593'
+                },
+                {
+                    'model_name': 'LivePortraitStitchingLip', 
+                    'local_path': f'{models_dir}/liveportrait_onnx/stitching_lip.' + trt.__version__ + '.trt', 
+                    'hash': '2ac2e57eb2edd5aec70dc45023113e2ccc0495a16579c6c5d56fa30b74edc4f5'
+                },
+                {
+                    'model_name': 'LivePortraitStitching', 
+                    'local_path': f'{models_dir}/liveportrait_onnx/stitching.' + trt.__version__ + '.trt', 
+                    'hash': '8448de922a824b7b11eb7f470805ec22cf4ee541f7d66afeb2965094f96fd3ab'
+                },
+                {
+                    'model_name': 'LivePortraitWarpingSpadeFix', 
+                    'local_path': f'{models_dir}/liveportrait_onnx/warping_spade-fix.' + trt.__version__ + '.trt', 
+                    'hash': '24acdb6379b28fbefefb6339b3605693e00f1703c21ea5b8fec0215e521f6912'
+                }
+            ]
+        except Exception as exc:
+            print(f'TensorRT 不可用，已跳过 TensorRT 模型列表构建：{exc}')
+            _models_trt_list_cache = []
+    return _models_trt_list_cache
 
 arcface_mapping_model_dict = {
     'Inswapper128': 'Inswapper128ArcFace',

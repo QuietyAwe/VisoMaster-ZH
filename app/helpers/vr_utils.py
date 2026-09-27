@@ -154,11 +154,16 @@ class PerspectiveConverter:
                                   target_equirect_torch_cxhxw_rgb_uint8: torch.Tensor,
                                   processed_crop_torch_cxhxw_rgb_uint8: torch.Tensor,
                                   theta: float, phi: float, fov: float,
-                                  is_left_eye: bool):
+                                  is_left_eye: bool,
+                                  crop_mask_1xhxw_float: torch.Tensor | None = None):
         """
         Stitches a single processed perspective crop back into the target equirectangular image.
         Modifies target_equirect_torch_cxhxw_rgb_uint8 in place.
         Assumes all tensors are on self.device.
+
+        crop_mask_1xhxw_float：crop 上"真正被改动区域"的软掩膜（0~1，1xHxW）。
+        - 传局部掩膜（最小值 < 1）→ 只替换该区域，无辜背景完全不动；
+        - 传全 1 / None → 沿用原来的整块 FOV 替换（Face Editor 改动整张 crop 时用）。
         """
 
         # The FOV for P2E_Perspective must match the FOV of the processed_crop_torch_cxhxw_rgb_uint8.
@@ -183,20 +188,22 @@ class PerspectiveConverter:
         # GetEquirec returns Torch tensors (window-shaped):
         # equirect_component_torch: (C, wh, ww) RGB uint8, the processed crop warped to equirectangular space.
         # mask_torch_original_shape: (1, wh, ww) boolean, indicating valid warped pixels.
-        equirect_component_torch, mask_torch_original_shape = p2e_instance.GetEquirec(
-            self.orig_height, self.orig_width, window=(y0, y1, x0, x1))
+        # 局部掩膜模式：crop 掩膜不是全 1 时只替换换脸真正改动的区域（见函数 docstring）
+        use_local_mask = False
+        extra_to_sample = None
+        if crop_mask_1xhxw_float is not None and float(crop_mask_1xhxw_float.min()) < 0.999:
+            use_local_mask = True
+            extra_to_sample = (crop_mask_1xhxw_float.clamp(0.0, 1.0) * 255.0).round().byte()
+
+        equirect_component_torch, mask_torch_original_shape, extra_component_torch = p2e_instance.GetEquirec(
+            self.orig_height, self.orig_width, window=(y0, y1, x0, x1),
+            extra_cxhw_uint8=extra_to_sample)
 
         # Create eye region mask (1, wh, ww) to define the current eye's hemisphere
         eye_region_mask = torch.zeros_like(mask_torch_original_shape, dtype=torch.bool)
         half_width = self.orig_width // 2
         xs = torch.arange(x0, x1, device=self.device)
         eye_region_mask[0, :, :] = (xs < half_width).unsqueeze(0) if is_left_eye else (xs >= half_width).unsqueeze(0)
-
-        # Apply eye region mask to the original projection mask to make it eye-specific
-        eye_specific_mask_torch_original_shape = mask_torch_original_shape & eye_region_mask
-
-        # Feather the eye-specific mask
-        feathered_mask_torch_float_1hw = self._apply_feathering(eye_specific_mask_torch_original_shape) # Returns 1HW float
 
         # 值域融合：全程 0-255 float，省去 /255、*255 与三操作 composite；
         # torch.lerp 为单 kernel 混合。缝合成本主要由 kernel launch 数决定
@@ -205,23 +212,31 @@ class PerspectiveConverter:
         target_float = target_window.float()
         component_float = equirect_component_torch.float()  # 0-255
 
-        # feathered_mask_torch_float_1hw is (1, wh, ww), can be broadcast with (C, wh, ww)
-        composite_float = torch.lerp(target_float, component_float, feathered_mask_torch_float_1hw)
+        if use_local_mask:
+            # 只替换 crop 掩膜覆盖的区域：无辜背景保持原样。
+            # 整块替换会让块内纹理被"降采样再放大"抹平（8K 实测平均差 11 级、锐度掉 70%），
+            # 边界因此露出方框；局部替换后无辜区差异实测 ≈ 0。
+            content_mask = (extra_component_torch.float() / 255.0).clamp_(0.0, 1.0)  # (1, wh, ww)
+            content_mask = content_mask * eye_region_mask.float()
+            final_blended_float = torch.lerp(target_float, component_float, content_mask)
+            # FOV 之外（含另一只眼的半边）一律不动
+            fov_and_eye_mask = (mask_torch_original_shape & eye_region_mask).expand_as(final_blended_float)
+            final_blended_float = torch.where(fov_and_eye_mask, final_blended_float, target_float)
+        else:
+            # 原逻辑：整块 FOV 替换 + Sobel 羽化（整张 crop 都被改动时仍需它）
+            eye_specific_mask_torch_original_shape = mask_torch_original_shape & eye_region_mask
+            feathered_mask_torch_float_1hw = self._apply_feathering(eye_specific_mask_torch_original_shape)
+            composite_float = torch.lerp(target_float, component_float, feathered_mask_torch_float_1hw)
+            mask_for_where = eye_specific_mask_torch_original_shape.expand_as(composite_float)
+            final_blended_float = torch.where(mask_for_where, composite_float, target_float)
 
-        # Use the eye-specific (non-feathered) mask for direct replacement areas
-        # eye_specific_mask_torch_original_shape is (1, wh, ww) boolean
-        # Expand to (C, wh, ww) for torch.where
-        mask_for_where = eye_specific_mask_torch_original_shape.expand_as(composite_float)
-
-        final_blended_float = torch.where(mask_for_where, composite_float, target_float)
-
-        target_window[:] = final_blended_float.clamp_(0, 255).byte()
+        # round 而非截断（floor）：消除写回时的最后一道系统性压暗，配合 E2P/P2E 的
+        # round，往返后贴回块与原图的亮度台阶基本消失，方框暗线随之不可见。
+        target_window[:] = final_blended_float.clamp_(0, 255).round_().byte()
 
         # Explicitly delete intermediate tensors if memory is tight, though Python's GC + PyTorch should handle it.
         del p2e_instance, equirect_component_torch, mask_torch_original_shape
-        del eye_region_mask, eye_specific_mask_torch_original_shape
-        del feathered_mask_torch_float_1hw
-        del target_float, component_float, composite_float, mask_for_where, final_blended_float
+        del target_float, component_float, final_blended_float, extra_component_torch
 
     def _stitch_window(self, theta: float, phi: float, fov: float, crop_shape,
                        height: int, width: int):

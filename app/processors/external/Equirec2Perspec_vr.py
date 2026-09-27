@@ -101,7 +101,9 @@ class Equirectangular:
         persp_float = F.grid_sample(self._img_tensor_cxhxw_rgb_float.unsqueeze(0), grid,
                                     mode='bilinear', padding_mode='border', align_corners=True)
         
-        persp_uint8 = (torch.clamp(persp_float.squeeze(0) * 255.0, 0, 255)).byte()
+        # round 而非截断：float32 下 v/255*255 常略小于 v，直接 .byte()（floor）会让每次
+        # 量化系统性压暗约 0.5~1 个色阶，全景→crop→全景 往返后整块变暗，边界露出台阶。
+        persp_uint8 = (torch.clamp(persp_float.squeeze(0) * 255.0, 0, 255)).round().byte()
         return persp_uint8
 
     def get_width(self):

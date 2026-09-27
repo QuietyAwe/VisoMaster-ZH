@@ -12,24 +12,53 @@ import torch
 import onnx
 from torchvision.transforms import v2
 
-# --- NEW KORNIA IMPORT ---
-try:
-    import kornia.color as K
-except ImportError:
-    K = None # Fallback if Kornia is not installed, can add error handling or power-law
-    print("Warning: Kornia library not found. Color space conversions will use power-law approximation.")
-# --- END NEW KORNIA IMPORT ---
-
 from PySide6 import QtCore
-try:
-    import tensorrt as trt
-    TENSORRT_AVAILABLE = True
-except ModuleNotFoundError:
-    print("No TensorRT Found")
-    TENSORRT_AVAILABLE = False
 
-from app.processors.utils.engine_builder import onnx_to_trt as onnx2trt
-from app.processors.utils.tensorrt_predictor import TensorRTPredictor
+# --- 惰性依赖：kornia / tensorrt ---
+# 这两个库在导入时开销很大（kornia 约 2s、tensorrt 约 8s），而启动阶段并不需要它们，
+# 因此改为首次真正使用时才导入。注意：模块级不再存在 `K` 与 `trt` 这两个名字，
+# 需要 kornia 请用 get_kornia_color()，需要 tensorrt 请用 get_tensorrt()。
+_KORNIA_COLOR = None
+_KORNIA_CHECKED = False
+
+def get_kornia_color():
+    """惰性导入并返回 kornia.color；不可用时返回 None。"""
+    global _KORNIA_COLOR, _KORNIA_CHECKED
+    if not _KORNIA_CHECKED:
+        _KORNIA_CHECKED = True
+        try:
+            import kornia.color as _K
+            _KORNIA_COLOR = _K
+        except ImportError as exc:
+            print(f"Warning: Kornia library not found ({exc}). Color space conversions will use power-law approximation.")
+            _KORNIA_COLOR = None
+    return _KORNIA_COLOR
+
+_TRT_MODULE = None
+_TRT_CHECKED = False
+
+def is_tensorrt_available():
+    """轻量探测 tensorrt 是否已安装（只查模块元数据，不执行导入）。"""
+    if _TRT_CHECKED:
+        return _TRT_MODULE is not None
+    from importlib.util import find_spec
+    return find_spec("tensorrt") is not None
+
+def get_tensorrt():
+    """惰性导入并返回 tensorrt 模块；不可用时返回 None。首次调用会有约 8s 的加载开销。"""
+    global _TRT_MODULE, _TRT_CHECKED
+    if not _TRT_CHECKED:
+        _TRT_CHECKED = True
+        try:
+            import tensorrt as _trt
+            _TRT_MODULE = _trt
+        except Exception as exc:
+            print(f"No TensorRT Found ({exc})")
+            _TRT_MODULE = None
+    return _TRT_MODULE
+
+# 注意：engine_builder 与 tensorrt_predictor 都会在模块级 import tensorrt（约 8s），
+# 因此不在顶层导入它们，改为在 load_model_trt / delete_models_trt 内部按需导入。
 from app.processors.face_detectors import FaceDetectors
 from app.processors.face_landmark_detectors import FaceLandmarkDetectors
 from app.processors.face_masks import FaceMasks
@@ -38,7 +67,7 @@ from app.processors.face_swappers import FaceSwappers
 from app.processors.frame_enhancers import FrameEnhancers
 from app.processors.face_editors import FaceEditors
 from app.processors.utils.dfm_model import DFMModel
-from app.processors.models_data import models_list, arcface_mapping_model_dict, models_trt_list, models_dir
+from app.processors.models_data import models_list, arcface_mapping_model_dict, get_models_trt_list, models_dir
 from app.processors.utils import faceutil
 from app.helpers.miscellaneous import is_file_exists
 from app.helpers.downloader import download_file
@@ -176,7 +205,9 @@ class ModelsProcessor(QtCore.QObject):
     def __init__(self, main_window: 'MainWindow', device='cuda'):
         super().__init__()
         self.main_window = main_window
-        self.K = K # Assign the module-level K to an instance attribute
+        # kornia 改为惰性加载（见 get_kornia_color），这里保持为 None 表示"当前不可用"，
+        # 色彩转换会走 gamma 近似路径；确实需要 kornia 时调用 get_kornia_color()。
+        self.K = None
         self.provider_name = 'TensorRT'
         self.internal_deep_copied_kv_map: Dict[str, Dict[str, torch.Tensor]] | None = None
         self.internal_kv_map_source_filename: str | None = None
@@ -211,13 +242,10 @@ class ModelsProcessor(QtCore.QObject):
 
         self.dfm_models: Dict[str, DFMModel] = {}
 
-        if TENSORRT_AVAILABLE:
-            self.models_trt: Dict[str, TensorRTPredictor | None] = {} # Allow None
-            self.models_trt_path = {}
-            for model_data in models_trt_list:
-                model_name, model_path = model_data['model_name'], model_data['local_path']
-                self.models_trt[model_name] = None 
-                self.models_trt_path[model_name] = model_path
+        # TensorRT 模型实例与路径改为惰性构建（见 _ensure_trt_model_paths），
+        # 这样启动时不会 import tensorrt，只有真正需要 TensorRT 引擎时才付出加载开销。
+        self.models_trt: Dict[str, "TensorRTPredictor | None"] = {} # Allow None（延迟导入，注解用字符串）
+        self.models_trt_path = {}
 
         self.face_detectors = FaceDetectors(self)
         self.face_landmark_detectors = FaceLandmarkDetectors(self)
@@ -317,6 +345,10 @@ class ModelsProcessor(QtCore.QObject):
         # self.showModelLoadingProgressBar()
         #time.sleep(0.5)
         self.main_window.model_loading_signal.emit()
+        self._ensure_trt_model_paths()
+        # 这两个模块会 import tensorrt，只有真正要构建/加载 TRT 引擎时才导入
+        from app.processors.utils.engine_builder import onnx_to_trt as onnx2trt
+        from app.processors.utils.tensorrt_predictor import TensorRTPredictor
 
         if not os.path.exists(self.models_trt_path[model_name]):
             onnx2trt(onnx_model_path=self.models_path[model_name],
@@ -337,16 +369,34 @@ class ModelsProcessor(QtCore.QObject):
         self.clip_session = []
         gc.collect()
 
+    def _ensure_trt_model_paths(self):
+        """首次需要 TensorRT 引擎时才构建 models_trt / models_trt_path（会触发 tensorrt 导入）。
+
+        未安装 TensorRT 时两个字典保持为空，行为与旧版 `models_trt_list == []` 一致。
+        """
+        if self.models_trt_path:
+            return
+        if not is_tensorrt_available():
+            return
+        if get_tensorrt() is None:
+            return
+        for model_data in get_models_trt_list():
+            model_name, model_path = model_data['model_name'], model_data['local_path']
+            self.models_trt[model_name] = None
+            self.models_trt_path[model_name] = model_path
+
     def delete_models_trt(self):
-        if TENSORRT_AVAILABLE:
-            for model_data in models_trt_list:
-                model_name = model_data['model_name']
-                if isinstance(self.models_trt[model_name], TensorRTPredictor):
-                    # È un'istanza di TensorRTPredictor
-                    self.models_trt[model_name].cleanup()
-                    del self.models_trt[model_name]
-                    self.models_trt[model_name] = None #Model Instance
-            gc.collect()
+        # 从未构建过 TensorRT 模型路径时无需清理，也不应触发 tensorrt 导入
+        if not self.models_trt_path:
+            return
+        from app.processors.utils.tensorrt_predictor import TensorRTPredictor
+        for model_name in list(self.models_trt.keys()):
+            if isinstance(self.models_trt[model_name], TensorRTPredictor):
+                # È un'istanza di TensorRTPredictor
+                self.models_trt[model_name].cleanup()
+                del self.models_trt[model_name]
+                self.models_trt[model_name] = None #Model Instance
+        gc.collect()
 
     def delete_models_dfm(self):
         keys_to_remove = []
@@ -387,9 +437,13 @@ class ModelsProcessor(QtCore.QObject):
                                 ('CPUExecutionProvider') # type: ignore
                             ]
                 self.device = 'cuda'
-                if TENSORRT_AVAILABLE and version.parse(trt.__version__) < version.parse("10.2.0") and provider_name == "TensorRT-Engine": # type: ignore
-                    print("TensorRT-Engine provider cannot be used when TensorRT version is lower than 10.2.0.")
-                    provider_name = "TensorRT"
+                # 只有 TensorRT-Engine 会用到自研 .trt 引擎，此时才需要 tensorrt 的版本信息
+                if provider_name == "TensorRT-Engine":
+                    trt_module = get_tensorrt()
+                    if trt_module is not None and version.parse(trt_module.__version__) < version.parse("10.2.0"): # type: ignore
+                        print("TensorRT-Engine provider cannot be used when TensorRT version is lower than 10.2.0.")
+                        provider_name = "TensorRT"
+                    self._ensure_trt_model_paths()
 
             case "CPU":
                 providers = [

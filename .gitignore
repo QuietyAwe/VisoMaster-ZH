@@ -38,3 +38,4 @@ TensorRT-10.13.0.35/
 *.jpg
 *.exe
 .thumbnails
+.ui_build_stamp

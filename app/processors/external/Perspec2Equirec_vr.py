@@ -86,8 +86,15 @@ class Perspective:
     def SetParameters(self, FOV, THETA, PHI, ROLL = 0.0):
         self._init_params(FOV, THETA, PHI, ROLL)
 
-    def GetEquirec(self, height: int, width: int, window: tuple[int, int, int, int] | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    def GetEquirec(self, height: int, width: int, window: tuple[int, int, int, int] | None = None,
+                   extra_cxhw_uint8: torch.Tensor | None = None
+                   ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor | None]:
         """反投影到等距柱状空间。
+
+        extra_cxhw_uint8：可选的附加图（如 crop 上的换脸掩膜）。传入时用**同一个 grid**
+        顺带采样，避免为掩膜再算一遍网格/旋转（缝合成本主要由 kernel launch 决定，
+        复用 grid 可把附加采样的开销压到只多一次 1 通道采样）。
+        返回 (component, mask, extra_component_or_None)。
 
         window=(y0, y1, x0, x1)：只计算全景的局部窗口（crop 投影仅影响局部区域，
         全图计算每脸要 840 万点的网格/采样，实测缝合占渲染 AI 时间三分之一）。
@@ -165,9 +172,17 @@ class Perspective:
         equirect_component_float = F.grid_sample(self._img_tensor_cxhxw_rgb_float.unsqueeze(0), grid,
                                                  mode='bilinear', padding_mode='border', align_corners=True)
         
-        equirect_component_uint8 = (torch.clamp(equirect_component_float.squeeze(0) * 255.0, 0, 255)).byte()
-        
+        # 同 Equirec2Perspec：round 而非 floor，避免反投影再次系统性压暗（见该文件注释）
+        equirect_component_uint8 = (torch.clamp(equirect_component_float.squeeze(0) * 255.0, 0, 255)).round().byte()
+
+        # 附加图（换脸掩膜）复用同一 grid 采样
+        extra_component_uint8 = None
+        if extra_cxhw_uint8 is not None:
+            extra_float = F.grid_sample((extra_cxhw_uint8.float() / 255.0).unsqueeze(0), grid,
+                                        mode='bilinear', padding_mode='border', align_corners=True)
+            extra_component_uint8 = (torch.clamp(extra_float.squeeze(0) * 255.0, 0, 255)).round().byte()
+
         # Mask should be (H_out, W_out, 1) or (1, H_out, W_out) for broadcasting
         mask_out = mask.unsqueeze(0) # 1, H, W
 
-        return equirect_component_uint8, mask_out
+        return equirect_component_uint8, mask_out, extra_component_uint8
