@@ -670,16 +670,19 @@ class FrameWorker(threading.Thread):
                 processed_tensor_rgb_uint8, device=self.models_processor.device
             )
 
-            _t0 = time.perf_counter()
-            for eye_side, data in processed_perspective_crops_details.items():
-                # data['tensor_rgb_uint8'] is already CHW RGB uint8 Torch tensor on GPU
-                p2e_converter.stitch_single_perspective(
-                    target_equirect_torch_cxhxw_rgb_uint8=final_equirect_torch_cxhxw_rgb_uint8, # Modified in-place
-                    processed_crop_torch_cxhxw_rgb_uint8=data['tensor_rgb_uint8'],
-                    theta=data['theta'], phi=data['phi'], fov=data['fov_used_for_crop'], # Use stored dynamic FOV
-                    is_left_eye=("L" in eye_side.split('_')[0]) # Correctly use eye_side (key of the loop)
-                )
-            _rec('stitch', time.perf_counter() - _t0)
+            # 未开换脸/编辑时 crop 未经修改，反投影写回只是 identity 空转
+            # （白耗缝合时间且引入插值模糊），直接跳过。
+            if swap_button_is_checked_global or edit_button_is_checked_global:
+                _t0 = time.perf_counter()
+                for eye_side, data in processed_perspective_crops_details.items():
+                    # data['tensor_rgb_uint8'] is already CHW RGB uint8 Torch tensor on GPU
+                    p2e_converter.stitch_single_perspective(
+                        target_equirect_torch_cxhxw_rgb_uint8=final_equirect_torch_cxhxw_rgb_uint8, # Modified in-place
+                        processed_crop_torch_cxhxw_rgb_uint8=data['tensor_rgb_uint8'],
+                        theta=data['theta'], phi=data['phi'], fov=data['fov_used_for_crop'], # Use stored dynamic FOV
+                        is_left_eye=("L" in eye_side.split('_')[0]) # Correctly use eye_side (key of the loop)
+                    )
+                _rec('stitch', time.perf_counter() - _t0)
 
             processed_tensor_rgb_uint8 = final_equirect_torch_cxhxw_rgb_uint8
             # 局部显存变量随作用域自动回收；不逐帧 torch.cuda.empty_cache()——

@@ -168,18 +168,29 @@ class PerspectiveConverter:
             return
 
         p2e_instance = P2E_Perspective(processed_crop_torch_cxhxw_rgb_uint8, FOV=fov, THETA=theta, PHI=phi)
-        # GetEquirec returns Torch tensors:
-        # equirect_component_torch: (C, H, W) RGB uint8, the processed crop warped to equirectangular space.
-        # mask_torch_original_shape: (1, H, W) boolean, indicating valid warped pixels.
-        equirect_component_torch, mask_torch_original_shape = p2e_instance.GetEquirec(self.orig_height, self.orig_width)
 
-        # Create eye region mask (1, H, W) to define the current eye's hemisphere
-        eye_region_mask = torch.zeros_like(mask_torch_original_shape, dtype=torch.bool) 
-        half_width = self.orig_width // 2
-        if is_left_eye:
-            eye_region_mask[:, :, :half_width] = True
+        # 局部窗口：crop 反投影只影响全景上一块局部区域，逐脸全图计算（每脸 840 万点
+        # 的网格/采样/羽化/混合）是缝合耗时根源（实测占渲染 AI 时间三分之一）。
+        # 窗口取投影锥体的经纬包围盒+羽化裕量，坐标与全图 linspace 严格对齐，
+        # 窗口内结果与全图计算逐像素一致。
+        win = self._stitch_window(theta, phi, fov, processed_crop_torch_cxhxw_rgb_uint8.shape,
+                                  self.orig_height, self.orig_width)
+        if win is None:
+            y0, y1, x0, x1 = 0, self.orig_height, 0, self.orig_width
         else:
-            eye_region_mask[:, :, half_width:] = True
+            y0, y1, x0, x1 = win
+
+        # GetEquirec returns Torch tensors (window-shaped):
+        # equirect_component_torch: (C, wh, ww) RGB uint8, the processed crop warped to equirectangular space.
+        # mask_torch_original_shape: (1, wh, ww) boolean, indicating valid warped pixels.
+        equirect_component_torch, mask_torch_original_shape = p2e_instance.GetEquirec(
+            self.orig_height, self.orig_width, window=(y0, y1, x0, x1))
+
+        # Create eye region mask (1, wh, ww) to define the current eye's hemisphere
+        eye_region_mask = torch.zeros_like(mask_torch_original_shape, dtype=torch.bool)
+        half_width = self.orig_width // 2
+        xs = torch.arange(x0, x1, device=self.device)
+        eye_region_mask[0, :, :] = (xs < half_width).unsqueeze(0) if is_left_eye else (xs >= half_width).unsqueeze(0)
 
         # Apply eye region mask to the original projection mask to make it eye-specific
         eye_specific_mask_torch_original_shape = mask_torch_original_shape & eye_region_mask
@@ -187,27 +198,56 @@ class PerspectiveConverter:
         # Feather the eye-specific mask
         feathered_mask_torch_float_1hw = self._apply_feathering(eye_specific_mask_torch_original_shape) # Returns 1HW float
 
-        target_equirect_float = target_equirect_torch_cxhxw_rgb_uint8.float() / 255.0
+        # 值域融合：全程 0-255 float，省去 /255、*255 与三操作 composite；
+        # torch.lerp 为单 kernel 混合。缝合成本主要由 kernel launch 数决定
+        # （实测窗口化省数据时间但不省 launch，反而更慢），故以削减算子数为目标。
+        target_window = target_equirect_torch_cxhxw_rgb_uint8[:, y0:y1, x0:x1]
+        target_float = target_window.float()
+        component_float = equirect_component_torch.float()  # 0-255
 
-        # Use the original, non-eye-masked equirect_component_torch for pixel data
-        equirect_component_float = equirect_component_torch.float() / 255.0
-
-        # feathered_mask_torch_float_1hw is (1, H, W), can be broadcast with (C, H, W)
-        composite_float = target_equirect_float * (1.0 - feathered_mask_torch_float_1hw) + \
-                          equirect_component_float * feathered_mask_torch_float_1hw
+        # feathered_mask_torch_float_1hw is (1, wh, ww), can be broadcast with (C, wh, ww)
+        composite_float = torch.lerp(target_float, component_float, feathered_mask_torch_float_1hw)
 
         # Use the eye-specific (non-feathered) mask for direct replacement areas
-        # eye_specific_mask_torch_original_shape is (1, H, W) boolean
-        # Expand to (C, H, W) for torch.where
-        mask_for_where = eye_specific_mask_torch_original_shape.expand_as(target_equirect_float)
-        
-        final_blended_float = torch.where(mask_for_where, composite_float, target_equirect_float)
-        
-        target_equirect_torch_cxhxw_rgb_uint8[:] = (torch.clamp(final_blended_float * 255.0, 0, 255)).byte()
+        # eye_specific_mask_torch_original_shape is (1, wh, ww) boolean
+        # Expand to (C, wh, ww) for torch.where
+        mask_for_where = eye_specific_mask_torch_original_shape.expand_as(composite_float)
+
+        final_blended_float = torch.where(mask_for_where, composite_float, target_float)
+
+        target_window[:] = final_blended_float.clamp_(0, 255).byte()
 
         # Explicitly delete intermediate tensors if memory is tight, though Python's GC + PyTorch should handle it.
         del p2e_instance, equirect_component_torch, mask_torch_original_shape
-        del eye_region_mask, eye_specific_mask_torch_original_shape 
+        del eye_region_mask, eye_specific_mask_torch_original_shape
         del feathered_mask_torch_float_1hw
-        del target_equirect_float, equirect_component_float, composite_float, mask_for_where, final_blended_float
+        del target_float, component_float, composite_float, mask_for_where, final_blended_float
+
+    def _stitch_window(self, theta: float, phi: float, fov: float, crop_shape,
+                       height: int, width: int):
+        """投影锥体在全景上的像素包围盒 (y0, y1, x0, x1)（含羽化裕量）。
+
+        坐标与 GetEquirec 的 linspace 映射对齐：lon[-180,180]→x[0,W-1]，
+        lat[90,-90]→y[0,H-1]。跨经度接缝（theta 靠近 ±180°，脑后位置）时
+        返回 None，调用方回退全图计算。
+        """
+        ch, cw = crop_shape[-2], crop_shape[-1]
+        w_len = np.tan(np.radians(fov / 2.0))
+        h_len = np.tan(np.radians(ch / cw * fov / 2.0))
+        # 投影锥体的对角角半径 + 羽化/插值裕量
+        half_ang = float(np.degrees(np.arctan(np.sqrt(w_len * w_len + h_len * h_len)))) + 3.0
+        lon0, lon1 = theta - half_ang, theta + half_ang
+        if lon0 < -180.0 or lon1 > 180.0:
+            return None
+        lat0 = max(-90.0, phi - half_ang)
+        lat1 = min(90.0, phi + half_ang)
+        x0 = int(np.floor((lon0 + 180.0) / 360.0 * (width - 1)))
+        x1 = int(np.ceil((lon1 + 180.0) / 360.0 * (width - 1))) + 1
+        y0 = int(np.floor((90.0 - lat1) / 180.0 * (height - 1)))
+        y1 = int(np.ceil((90.0 - lat0) / 180.0 * (height - 1))) + 1
+        x0, y0 = max(0, x0), max(0, y0)
+        x1, y1 = min(width, x1), min(height, y1)
+        if x1 <= x0 or y1 <= y0:
+            return None
+        return (y0, y1, x0, x1)
  

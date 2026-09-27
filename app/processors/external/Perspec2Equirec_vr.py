@@ -86,10 +86,22 @@ class Perspective:
     def SetParameters(self, FOV, THETA, PHI, ROLL = 0.0):
         self._init_params(FOV, THETA, PHI, ROLL)
 
-    def GetEquirec(self, height: int, width: int) -> tuple[torch.Tensor, torch.Tensor]:
-        # Create equirectangular grid
-        equ_lon_coords = torch.linspace(-180, 180, width, device=self.device, dtype=torch.float32)
-        equ_lat_coords = torch.linspace(90, -90, height, device=self.device, dtype=torch.float32)
+    def GetEquirec(self, height: int, width: int, window: tuple[int, int, int, int] | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        """反投影到等距柱状空间。
+
+        window=(y0, y1, x0, x1)：只计算全景的局部窗口（crop 投影仅影响局部区域，
+        全图计算每脸要 840 万点的网格/采样，实测缝合占渲染 AI 时间三分之一）。
+        窗口坐标取自与全图一致的 linspace 子区间，结果与全图计算严格一致。
+        """
+        if window is None:
+            y0, y1, x0, x1 = 0, height, 0, width
+        else:
+            y0, y1, x0, x1 = window
+        win_h, win_w = y1 - y0, x1 - x0
+
+        # Create equirectangular grid（窗口子区间，与全图坐标严格对齐）
+        equ_lon_coords = torch.linspace(-180, 180, width, device=self.device, dtype=torch.float32)[x0:x1]
+        equ_lat_coords = torch.linspace(90, -90, height, device=self.device, dtype=torch.float32)[y0:y1]
         equ_lon_grid, equ_lat_grid = torch.meshgrid(equ_lon_coords, equ_lat_coords, indexing='xy') # Note: meshgrid indexing
 
         # Convert equirectangular (lon, lat) to 3D Cartesian unit vectors
@@ -105,7 +117,7 @@ class Perspective:
         xyz_flat = xyz_equ_norm.reshape(-1, 3).T # (3, H*W)
         # Apply inverse rotations in reverse order: R_inv = R1_inv @ R2_inv @ R3_inv
         rotated_xyz_flat = self.R1_inv @ self.R2_inv @ self.R3_inv @ xyz_flat
-        rotated_xyz_persp_view = rotated_xyz_flat.T.reshape(height, width, 3) # H, W, 3
+        rotated_xyz_persp_view = rotated_xyz_flat.T.reshape(win_h, win_w, 3) # H, W, 3
 
         # Perspective projection: u = x'/z', v = y'/z'
         # rotated_xyz_persp_view[..., 0] is depth (along camera's X-axis)
